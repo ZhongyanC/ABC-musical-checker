@@ -43,6 +43,312 @@ class HeaderChecker(CheckerModule):
 
         return issues, modified_lines
 
+class LengthUnifier(CheckerModule):
+    """
+    统一各声部的 L: 单位音符时值，以所有声部中最小（最精细）的 L: 为目标。
+
+    算法（参考 ABC v2.1 §3.1.7 和 §4.2）：
+      1. 收集全局 L:（K: 之前）及各 V: 块内的 L: 行，
+         未声明者按 ABC 标准从 M: 推导默认值（M<0.75 → 1/16，否则 1/8）。
+      2. 找出最小 L: 作为目标值 target_L。
+      3. 对每个有效 L: ≠ target_L 的声部，将乐谱行内全部音符/休止符/和弦
+         的时值修饰符乘以 (old_L / target_L)；同步更新其 L: 行。
+      4. 更新或插入全局 L: 为 target_L。
+      5. inline [L:...] 字段一并替换为 target_L。
+
+    音符时值缩放遵循 ABC 标准时值语法：
+      - 裸音符 A  → 乘以 scale（如 scale=2: A → A2）
+      - A2 → A4（整数乘）
+      - A/ 或 A/2 → A1（即 A）（1/2 * 2 = 1）
+      - A3/2 → A3（3/2 * 2 = 3）
+      - 和弦 [CEG]2 → [CEG]4（外部修饰符）
+      - 和弦 [C2E2G2] → [C4E4G4]（内部修饰符，仅当无外部）
+      - Z/X（多小节休止）的计数不缩放
+      - 连音符规格 (p:q:r) 不缩放（各音符时值单独处理）
+    """
+
+    def _parse_meter(self, lines: List[str]) -> Optional[Tuple[int, int]]:
+        for line in lines:
+            s = line.lstrip()
+            if not s.startswith('M:'):
+                continue
+            val = s[2:].strip()
+            if val in ('C', 'c'):    return (4, 4)
+            if val in ('C|', 'c|'): return (2, 2)
+            m = re.match(r'(\d+)/(\d+)', val)
+            if m:
+                return (int(m.group(1)), int(m.group(2)))
+        return None
+
+    def _parse_l(self, s: str) -> Optional[Fraction]:
+        m = re.match(r'\s*L:\s*(\d+)/(\d+)', s)
+        return Fraction(int(m.group(1)), int(m.group(2))) if m else None
+
+    def _default_l(self, meter: Optional[Tuple[int, int]]) -> Fraction:
+        if meter is None:
+            return Fraction(1, 8)
+        return Fraction(1, 16) if (meter[0] / meter[1]) < 0.75 else Fraction(1, 8)
+
+    def _read_len(self, s: str, pos: int) -> Tuple[Fraction, int]:
+        """解析 pos 处的时值修饰符，返回 (Fraction, new_pos)。"""
+        n, j = len(s), pos
+        num_s = ''
+        while j < n and s[j].isdigit(): num_s += s[j]; j += 1
+        slashes = 0
+        while j < n and s[j] == '/': slashes += 1; j += 1
+        den_s = ''
+        while j < n and s[j].isdigit(): den_s += s[j]; j += 1
+        if not num_s and not slashes:
+            return Fraction(1), pos
+        num = int(num_s) if num_s else 1
+        den = (int(den_s) if den_s else 2 ** slashes) if slashes else 1
+        return Fraction(num, den), j
+
+    def _len_str(self, f: Fraction) -> str:
+        """Fraction → ABC 时值修饰符字符串。"""
+        if f == 1:             return ''
+        if f.denominator == 1: return str(f.numerator)
+        if f.numerator == 1:   return f'/{f.denominator}'
+        return f'{f.numerator}/{f.denominator}'
+
+    def _rewrite(self, s: str, scale: Fraction,
+                 target_l: Optional[Fraction] = None) -> str:
+        """按 scale 缩放字符串 s 中所有音符时值修饰符。"""
+        if scale == 1:
+            return s
+        out: List[str] = []
+        i, n = 0, len(s)
+
+        while i < n:
+            c = s[i]
+
+            # % 注释 → 保留至行尾
+            if c == '%':
+                j = s.find('\n', i)
+                end = n if j == -1 else j
+                out.append(s[i:end]); i = end; continue
+
+            # "..." 和弦符号/注释字符串
+            if c == '"':
+                j = i + 1
+                while j < n and s[j] != '"': j += 1
+                if j < n: j += 1
+                out.append(s[i:j]); i = j; continue
+
+            # !...! 装饰
+            if c == '!':
+                j = i + 1
+                while j < n and s[j] != '!': j += 1
+                if j < n: j += 1
+                out.append(s[i:j]); i = j; continue
+
+            # +...+ 装饰
+            if c == '+':
+                j = i + 1
+                while j < n and s[j] != '+': j += 1
+                if j < n: j += 1
+                out.append(s[i:j]); i = j; continue
+
+            # {...} 装饰音 — 内部也缩放（保持内部比例一致）
+            if c == '{':
+                j = i + 1
+                while j < n and s[j] != '}': j += 1
+                inside = s[i+1:j]
+                if j < n: j += 1
+                out.append('{' + self._rewrite(inside, scale, target_l) + '}')
+                i = j; continue
+
+            # inline field [X:...]
+            if (c == '[' and i + 2 < n
+                    and s[i+1].isalpha() and s[i+2] == ':'):
+                j = i + 1
+                while j < n and s[j] != ']': j += 1
+                inner = s[i+1:j]
+                if j < n: j += 1
+                if inner.startswith('L:') and target_l is not None:
+                    # 替换为目标 L:
+                    out.append(
+                        f'[L:{target_l.numerator}/{target_l.denominator}]'
+                    )
+                else:
+                    out.append(s[i:j])
+                i = j; continue
+
+            # 和弦 [notes]outer_len
+            if c == '[':
+                # [1 [2 反复标记
+                if i + 1 < n and s[i+1].isdigit():
+                    out.append(c); i += 1; continue
+                j = i + 1
+                while j < n and s[j] != ']': j += 1
+                inside = s[i+1:j]
+                if j < n: j += 1
+                outer_len, j = self._read_len(s, j)
+                if outer_len != 1:
+                    # 有外部修饰符：只缩放外部（避免与内部双重计数）
+                    out.append('[' + inside + ']')
+                    out.append(self._len_str(outer_len * scale))
+                else:
+                    # 无外部修饰符：缩放内部各音符
+                    out.append('[' + self._rewrite(inside, scale, target_l) + ']')
+                i = j; continue
+
+            # Z/X 多小节休止：数字是小节计数，不是 L 单位，不缩放
+            if c in 'ZX':
+                out.append(c); i += 1
+                while i < n and s[i].isdigit():
+                    out.append(s[i]); i += 1
+                continue
+
+            # (p:q:r 连音符规格 — 仅跳过规格本身，后续各音符单独处理
+            if c == '(':
+                out.append(c); i += 1
+                while i < n and s[i].isdigit(): out.append(s[i]); i += 1
+                while i < n and s[i] == ':':
+                    out.append(s[i]); i += 1
+                    while i < n and s[i].isdigit(): out.append(s[i]); i += 1
+                continue
+
+            # 音符/休止符：[变音符]* 音高 [八度]* [时值修饰符]
+            if c in '^_=ABCDEFGabcdefgzx':
+                start = i
+                while i < n and s[i] in '^_=': i += 1
+                if i < n and s[i] in 'ABCDEFGabcdefgzx':
+                    i += 1
+                while i < n and s[i] in ",'": i += 1
+                head_end = i
+                old_len, i = self._read_len(s, i)
+                out.append(s[start:head_end])
+                out.append(self._len_str(old_len * scale))
+                continue
+
+            out.append(c); i += 1
+
+        return ''.join(out)
+
+    @staticmethod
+    def _is_hdr(s: str) -> bool:
+        return len(s) >= 2 and s[1] == ':' and s[0].isalpha()
+
+    def process(self, lines: List[str], auto_fix: bool) -> Tuple[List[Issue], List[str]]:
+        issues = []
+        modified_lines = list(lines)
+
+        k_idx = next(
+            (i for i, l in enumerate(lines) if l.lstrip().startswith('K:')), None
+        )
+        if k_idx is None:
+            return issues, modified_lines
+
+        meter = self._parse_meter(lines[:k_idx + 1])
+        default_l = self._default_l(meter)
+
+        # 全局 L:（K: 之前）
+        global_l: Optional[Fraction] = None
+        global_l_idx: Optional[int] = None
+        for i, line in enumerate(lines[:k_idx + 1]):
+            val = self._parse_l(line.lstrip())
+            if val is not None:
+                global_l = val
+                global_l_idx = i
+
+        # 扫描各 V: 段
+        # 每段记录：v_idx（V: 行索引）、l_idx/l_val（段内 L: 行）、music_idxs（乐谱行）
+        segments: List[Dict] = []
+        cur: Optional[Dict] = None
+
+        for i in range(k_idx + 1, len(lines)):
+            s = lines[i].lstrip()
+            if s.startswith('V:'):
+                if cur is not None:
+                    segments.append(cur)
+                cur = {
+                    'v_idx': i, 'l_idx': None, 'l_val': None,
+                    'music_idxs': [], 'in_header': True,
+                }
+            elif cur is not None:
+                if cur['in_header'] and s.startswith('L:'):
+                    cur['l_idx'] = i
+                    cur['l_val'] = self._parse_l(s)
+                elif not s or s.startswith('%'):
+                    pass  # 空行 / 注释 / %% 指令
+                elif self._is_hdr(s):
+                    pass  # 其他头部字段（K:、M: 等）
+                else:
+                    cur['in_header'] = False
+                    cur['music_idxs'].append(i)
+
+        if cur is not None:
+            segments.append(cur)
+
+        if not segments:
+            return issues, modified_lines
+
+        # 计算各段有效 L:
+        for seg in segments:
+            seg['eff_l'] = seg['l_val'] if seg['l_val'] is not None else (
+                global_l if global_l is not None else default_l
+            )
+
+        # 只考虑有实际乐谱行的段
+        active = [seg for seg in segments if seg['music_idxs']]
+        if not active:
+            return issues, modified_lines
+
+        all_l = {seg['eff_l'] for seg in active}
+        if global_l is not None:
+            all_l.add(global_l)
+
+        min_l = min(all_l)
+
+        if all(seg['eff_l'] == min_l for seg in active):
+            return issues, modified_lines
+
+        # 报告问题
+        voice_info = ', '.join(
+            f"V:{lines[seg['v_idx']].lstrip()[2:].strip().split()[0]}"
+            f"→L:{seg['eff_l'].numerator}/{seg['eff_l'].denominator}"
+            for seg in active
+        )
+        issues.append(Issue(
+            line_index=k_idx + 1,
+            description=(
+                f"各声部 L: 不统一（{voice_info}）；"
+                f"将统一为最小值 L:{min_l.numerator}/{min_l.denominator}"
+            ),
+            severity="warning",
+        ))
+
+        if not auto_fix:
+            return issues, modified_lines
+
+        # 修复：缩放各段乐谱 + 更新 L: 行
+        for seg in active:
+            scale = seg['eff_l'] / min_l
+            if scale != 1:
+                for mi in seg['music_idxs']:
+                    modified_lines[mi] = self._rewrite(
+                        modified_lines[mi], scale, min_l
+                    )
+            if seg['l_idx'] is not None:
+                modified_lines[seg['l_idx']] = re.sub(
+                    r'L:\s*\d+/\d+',
+                    f'L:{min_l.numerator}/{min_l.denominator}',
+                    modified_lines[seg['l_idx']],
+                )
+
+        # 更新或插入全局 L:
+        new_l_str = f'L:{min_l.numerator}/{min_l.denominator}'
+        if global_l_idx is not None:
+            modified_lines[global_l_idx] = re.sub(
+                r'L:\s*\d+/\d+', new_l_str, modified_lines[global_l_idx]
+            )
+        else:
+            modified_lines.insert(k_idx, new_l_str)
+
+        return issues, modified_lines
+
+
 class ClefAutoSelector(CheckerModule):
     """
     自动判断音区并选择合适的谱号 (treble / bass)。
@@ -1026,6 +1332,115 @@ class MeasureDurationChecker(CheckerModule):
         return issues, modified_lines
 
 
+class TempoChecker(CheckerModule):
+    """
+    检查 Q: 速度字段的时值单位与 M: 拍号是否匹配。
+
+    规则：Q: 中明确指定的时值单位分母应与 M: 分母一致。
+      - 复合拍号（6/8、9/8、12/8）：标准节拍单位为 3/8（附点四分音符），
+        1/8（八分音符）也可接受；Q:1/4 等其他分母视为冲突。
+      - 简单拍号（2/4、3/4、4/4 等）：标准节拍单位为 1/分母。
+
+    auto_fix=True 时：将 Q: 时值单位替换为拍号的标准节拍单位，
+    并按等效速度重算 BPM（保持实际演奏时间不变）。
+
+    等效 BPM 公式（已知 Q:p/q=bpm，目标单位 P/Q）：
+      new_bpm = bpm × (p/q) / (P/Q) = bpm × p × Q / (P × q)
+    """
+
+    _COMPOUND = frozenset({(6, 8), (9, 8), (12, 8)})
+
+    def _parse_meter(self, lines: List[str]) -> Optional[Tuple[int, int]]:
+        for line in lines:
+            s = line.lstrip()
+            if not s.startswith('M:'):
+                continue
+            val = s[2:].strip()
+            if val in ('C', 'c'):    return (4, 4)
+            if val in ('C|', 'c|'): return (2, 2)
+            m = re.match(r'(\d+)/(\d+)', val)
+            if m:
+                return (int(m.group(1)), int(m.group(2)))
+        return None
+
+    def _standard_beat(self, meter: Tuple[int, int]) -> Fraction:
+        mn, md = meter
+        if (mn, md) in self._COMPOUND:
+            return Fraction(3, 8)
+        return Fraction(1, md)
+
+    def _parse_q(self, line: str) -> Optional[Tuple[Optional[Fraction], int]]:
+        """返回 (beat_unit_or_None, bpm)，或 None 表示不是 Q: 行。"""
+        s = line.lstrip()
+        if not s.startswith('Q:'):
+            return None
+        rest = s[2:].strip()
+        m = re.match(r'(\d+)/(\d+)\s*=\s*(\d+)', rest)
+        if m:
+            return Fraction(int(m.group(1)), int(m.group(2))), int(m.group(3))
+        m = re.match(r'^(\d+)', rest)
+        if m:
+            return None, int(m.group(1))
+        return None
+
+    def process(self, lines: List[str], auto_fix: bool) -> Tuple[List[Issue], List[str]]:
+        issues = []
+        modified_lines = list(lines)
+
+        k_idx = next((i for i, l in enumerate(lines) if l.lstrip().startswith('K:')), None)
+        if k_idx is None:
+            return issues, modified_lines
+
+        meter = self._parse_meter(lines[:k_idx + 1])
+        if meter is None:
+            return issues, modified_lines
+
+        mn, md = meter
+        is_compound = (mn, md) in self._COMPOUND
+        std_beat = self._standard_beat(meter)
+
+        for i, line in enumerate(lines[:k_idx + 1]):
+            parsed = self._parse_q(line)
+            if parsed is None:
+                continue
+            beat, bpm = parsed
+            if beat is None:
+                continue
+
+            if beat == std_beat:
+                continue
+            # 复合拍号下 1/8 也可接受
+            if is_compound and beat == Fraction(1, 8):
+                continue
+
+            new_bpm = round(Fraction(bpm) * beat / std_beat)
+            std_str = f"{std_beat.numerator}/{std_beat.denominator}"
+            old_str = f"{beat.numerator}/{beat.denominator}"
+
+            issues.append(Issue(
+                line_index=i,
+                description=(
+                    f"Q: 时值单位 {old_str} 与 M:{mn}/{md} 不匹配"
+                    f"（建议改为 Q:{std_str}={new_bpm}，实际演奏速度不变）"
+                ),
+                severity="warning",
+            ))
+
+            if auto_fix:
+                stripped = line.lstrip()
+                leading = line[:len(line) - len(stripped)]
+                rest = stripped[2:]  # "Q:" 之后的全部内容（含标签等）
+                new_rest = re.sub(
+                    r'\d+/\d+\s*=\s*\d+',
+                    f'{std_str}={new_bpm}',
+                    rest,
+                    count=1,
+                )
+                modified_lines[i] = f"{leading}Q:{new_rest}"
+
+        return issues, modified_lines
+
+
 class TempoEstimator(CheckerModule):
     """
     根据 M:、L: 及音符密度估算速度并建议 Q: 字段。
@@ -1130,9 +1545,15 @@ class TempoEstimator(CheckerModule):
             return issues, modified_lines
 
         meter = self._parse_meter(lines[:k_idx + 1])
-        unit  = self._parse_unit(lines[:k_idx + 1])
-        if meter is None or unit is None:
+        if meter is None:
             return issues, modified_lines
+
+        # L: 可能写在 K: 之后的 V: 块内，扩展到全文搜索；
+        # 仍找不到时按 ABC 标准从 M: 推导默认值
+        unit = self._parse_unit(lines[:k_idx + 1]) or self._parse_unit(lines)
+        if unit is None:
+            ratio = meter[0] / meter[1]
+            unit = (1, 16) if ratio < 0.75 else (1, 8)
 
         music_lines = [
             l for l in lines[k_idx + 1:]
@@ -1262,6 +1683,8 @@ C,,1 |]
     }
 
     engine.register_module(HeaderChecker(required_headers_with_defaults=header_rules))
+    engine.register_module(LengthUnifier())
+    engine.register_module(TempoChecker())
     engine.register_module(TempoEstimator())
     engine.register_module(VoiceBarCountChecker())
     engine.register_module(MeasureDurationChecker())
@@ -1277,3 +1700,52 @@ C,,1 |]
     issues, fixed_abc = engine.run_pipeline(sample_abc, auto_fix=True)
     print("修复后的乐谱内容：")
     print(fixed_abc)
+
+    # --- L: 统一演示（Czerny 风格：V:1=L:1/8, V:2=L:1/16）---
+    print("\n=== L: 统一演示（V:1→L:1/8，V:2→L:1/16）===")
+    demo_l = """X:1
+T:Carl Czerny
+%%score { 1 | 2 }
+M:3/8
+I:linebreak $
+K:G
+V:1 treble nm="Piano"
+%%MIDI program 0
+V:2 bass
+%%MIDI program 0
+V:1
+L:1/8
+ d2 g | b2 g | f2 c' | c'af |
+V:2
+L:1/16
+ G,DB,DB,D | G,DB,DB,D | A,DCDCD | A,DCDCD |
+"""
+    engine3 = ABCProcessor()
+    engine3.register_module(LengthUnifier())
+    l_issues, l_fixed = engine3.run_pipeline(demo_l, auto_fix=False)
+    print("检查结果：")
+    for iss in l_issues:
+        print(f"  [{iss.severity}] {iss.description}")
+    _, l_fixed = engine3.run_pipeline(demo_l, auto_fix=True)
+    print("修复后：")
+    print(l_fixed)
+
+    # --- Q: 时值一致性检查演示 ---
+    print("\n=== Q: 时值检查演示（M:6/8 + Q:1/4=120）===")
+    demo_q = """X:1
+T:Demo 6/8 Tempo
+M:6/8
+L:1/8
+Q:1/4=120
+K:G
+def gab|ded BAB|GAB dBG|A3 A3|]
+"""
+    engine2 = ABCProcessor()
+    engine2.register_module(TempoChecker())
+    q_issues, q_fixed = engine2.run_pipeline(demo_q, auto_fix=False)
+    print("检查结果：")
+    for issue in q_issues:
+        print(f"  [{issue.severity}] 行号 {issue.line_index} -> {issue.description}")
+    _, q_fixed = engine2.run_pipeline(demo_q, auto_fix=True)
+    print("修复后：")
+    print(q_fixed)

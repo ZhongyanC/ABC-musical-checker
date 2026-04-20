@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Running the project
 
 ```bash
-python main.py
+python abc_checker.py
 ```
 
 No external dependencies — standard library only.
