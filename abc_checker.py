@@ -1049,7 +1049,11 @@ class MeasureDurationChecker(CheckerModule):
                 while pos < n and s[pos] in '^_=': pos += 1
                 internal = Fraction(1)
                 if pos < n and s[pos] in 'ABCDEFGabcdefgzx':
-                    pos += 1; internal, pos = self._parse_len(s, pos)
+                    pos += 1
+                    # 跳过八度标记（, 和 '），然后解析时值
+                    while pos < n and s[pos] in ",'":
+                        pos += 1
+                    internal, pos = self._parse_len(s, pos)
                 while pos < n and s[pos] != ']': pos += 1
                 if pos < n: pos += 1
                 ext, np2 = self._parse_len(s, pos)
@@ -1314,13 +1318,41 @@ class MeasureDurationChecker(CheckerModule):
                 ))
 
             if auto_fix:
-                fixed = self._fix_content(
-                    content_orig, exp_voice, is_cmpd, max_first_by_vid.get(vid)
-                )
-                if fixed != content_orig:
-                    modified_lines[idxs[0]] = fixed
-                    for idx in idxs[1:]:
-                        modified_lines[idx] = ' '
+                # 保留原始行结构，逐行修复
+                fixed_lines_list = []
+                for line_idx, line in enumerate(lines[idxs[0]:idxs[-1]+1], start=idxs[0]):
+                    # 对每一行独立处理
+                    # 仅在最后一行检查是否需要补休止符（第一行按 first_expected）
+                    is_first = (line_idx == idxs[0])
+                    is_last = (line_idx == idxs[-1])
+                    
+                    # 简单修复：对单行应用修复逻辑
+                    line_content = lines[line_idx]
+                    pre = re.sub(r'"[^"]*"', '',
+                          re.sub(r'\[[A-Za-z]:[^\]]*\]', '', line_content))
+                    line_measures = [m for m in self._BAR_RE.sub('|', pre).split('|')]
+                    
+                    # 计算此行小节数和时值
+                    line_total = Fraction(0)
+                    for measure in line_measures:
+                        m_dur = self._measure_duration(measure.strip(), is_cmpd)
+                        if m_dur is not None:
+                            line_total += m_dur
+                    
+                    # 对此行应用修复
+                    if is_first and max_first_by_vid.get(vid) is not None:
+                        fixed_line = self._fix_content(
+                            line_content, exp_voice, is_cmpd, max_first_by_vid.get(vid)
+                        )
+                    else:
+                        fixed_line = self._fix_content(
+                            line_content, exp_voice, is_cmpd, None
+                        )
+                    fixed_lines_list.append((line_idx, fixed_line))
+                
+                # 更新修复后的行
+                for line_idx, fixed_line in fixed_lines_list:
+                    modified_lines[line_idx] = fixed_line
 
         if is_global_pickup:
             issues.append(Issue(
@@ -1594,6 +1626,236 @@ class TempoEstimator(CheckerModule):
         return issues, modified_lines
 
 
+class BarAccidentalPropagator(CheckerModule):
+    """
+    检查并修复同小节内临时升降号的传播。
+
+    依据 ABC v2.1 §4.2：^、=、_ 分别表示升号、还原、降号，仅对当前音有效。
+    但音频合成器通常不按"小节内传播"解读：某音一旦出现显式升降号，只会渲染该但个音的升降，并不会同小节传播。
+    本模块检测缺失的传播标记并在 auto_fix=True 时自动补全，
+    使 ABC 乐谱适合直接用于音频生成。
+
+    音高归一化规则（参考 §4.1）：
+      大写字母 = 第 0 八度，小写 = 第 1 八度；
+      每个 ' 升一个八度，每个 , 降一个八度。
+      因此 F' 与 f 属于同一音高，共享升降号状态。
+    """
+
+    _BAR_SPLIT_RE = re.compile(r'(:\|:|:\||\|\||\|\]|\[?\|:?)')
+
+    @staticmethod
+    def _norm(letter: str, octave_marks: str) -> tuple:
+        """(音名大写, 八度整数) 归一化键"""
+        pc = letter.upper()
+        octave = (1 if letter.islower() else 0) + octave_marks.count("'") - octave_marks.count(',')
+        return (pc, octave)
+
+    def _process_segment(self, seg: str, acc_state: dict, auto_fix: bool):
+        """
+        处理单个小节内容片段（不含小节线）。
+        acc_state 原地更新。
+        返回 (raw_issues, fixed_seg)；
+        raw_issues 为 list of (letter, octave_marks, expected_acc_str)。
+        """
+        issues = []
+        out = []
+        i, n = 0, len(seg)
+
+        while i < n:
+            c = seg[i]
+
+            # 行注释 → 保留至结尾
+            if c == '%':
+                out.append(seg[i:]); break
+
+            # 和弦符号 / 注释字符串 "..."
+            if c == '"':
+                j = i + 1
+                while j < n and seg[j] != '"': j += 1
+                if j < n: j += 1
+                out.append(seg[i:j]); i = j; continue
+
+            # 装饰音 {...} — 内部升降号不影响主音状态
+            if c == '{':
+                j = i + 1
+                while j < n and seg[j] != '}': j += 1
+                if j < n: j += 1
+                out.append(seg[i:j]); i = j; continue
+
+            # 装饰 !...!
+            if c == '!':
+                j = i + 1
+                while j < n and seg[j] != '!': j += 1
+                if j < n: j += 1
+                out.append(seg[i:j]); i = j; continue
+
+            # 装饰 +...+
+            if c == '+':
+                j = i + 1
+                while j < n and seg[j] != '+': j += 1
+                if j < n: j += 1
+                out.append(seg[i:j]); i = j; continue
+
+            # inline 字段 [X:...]
+            if c == '[' and i + 2 < n and seg[i+1].isalpha() and seg[i+2] == ':':
+                j = i + 1
+                while j < n and seg[j] != ']': j += 1
+                if j < n: j += 1
+                out.append(seg[i:j]); i = j; continue
+
+            # [1 [2 反复结尾标记（不是小节线，不重置）
+            if c == '[' and i + 1 < n and seg[i+1].isdigit():
+                out.append(c); i += 1; continue
+
+            # 和弦 [notes]
+            if c == '[':
+                out.append('['); i += 1
+                while i < n and seg[i] != ']':
+                    if seg[i] in '^_=':
+                        acc_str = ''
+                        while i < n and seg[i] in '^_=': acc_str += seg[i]; i += 1
+                        if i < n and seg[i] in 'ABCDEFGabcdefg':
+                            letter = seg[i]; i += 1
+                            om = ''
+                            while i < n and seg[i] in ",'": om += seg[i]; i += 1
+                            acc_state[self._norm(letter, om)] = acc_str
+                            out.append(acc_str + letter + om)
+                        else:
+                            out.append(acc_str)
+                    elif seg[i] in 'ABCDEFGabcdefg':
+                        letter = seg[i]; i += 1
+                        om = ''
+                        while i < n and seg[i] in ",'": om += seg[i]; i += 1
+                        norm = self._norm(letter, om)
+                        if norm in acc_state:
+                            exp = acc_state[norm]
+                            issues.append((letter, om, exp))
+                            out.append((exp if auto_fix else '') + letter + om)
+                        else:
+                            out.append(letter + om)
+                    else:
+                        out.append(seg[i]); i += 1
+                if i < n: out.append(']'); i += 1
+                continue
+
+            # 显式升降号 + 音符
+            if c in '^_=':
+                acc_str = ''
+                while i < n and seg[i] in '^_=': acc_str += seg[i]; i += 1
+                if i < n and seg[i] in 'ABCDEFGabcdefg':
+                    letter = seg[i]; i += 1
+                    om = ''
+                    while i < n and seg[i] in ",'": om += seg[i]; i += 1
+                    acc_state[self._norm(letter, om)] = acc_str
+                    out.append(acc_str + letter + om)
+                elif i < n and seg[i] in 'zx':
+                    # 升降号后接休止符（罕见，原样保留）
+                    out.append(acc_str + seg[i]); i += 1
+                else:
+                    out.append(acc_str)
+                continue
+
+            # 裸音符（无前置升降号）
+            if c in 'ABCDEFGabcdefg':
+                letter = seg[i]; i += 1
+                om = ''
+                while i < n and seg[i] in ",'": om += seg[i]; i += 1
+                norm = self._norm(letter, om)
+                if norm in acc_state:
+                    exp = acc_state[norm]
+                    issues.append((letter, om, exp))
+                    out.append((exp if auto_fix else '') + letter + om)
+                else:
+                    out.append(letter + om)
+                continue
+
+            out.append(c); i += 1
+
+        return issues, ''.join(out)
+
+    def _process_music_line(self, line: str, acc_state: dict, auto_fix: bool):
+        """
+        处理一行乐谱内容，维护跨行的 acc_state（小节内可跨行）。
+        遇到小节线时重置 acc_state。
+        返回 (raw_issues, fixed_line, updated_acc_state)。
+        """
+        parts = self._BAR_SPLIT_RE.split(line)
+        result = []
+        raw_issues = []
+
+        for j, part in enumerate(parts):
+            if j % 2 == 1:
+                result.append(part)
+                acc_state = {}          # 小节线处重置升降号状态
+            else:
+                seg_issues, fixed = self._process_segment(part, acc_state, auto_fix)
+                raw_issues.extend(seg_issues)
+                result.append(fixed)
+
+        return raw_issues, ''.join(result), acc_state
+
+    def process(self, lines: List[str], auto_fix: bool) -> Tuple[List[Issue], List[str]]:
+        issues = []
+        modified_lines = list(lines)
+
+        body_start = None
+        for i, line in enumerate(lines):
+            if line.lstrip().startswith('K:'):
+                body_start = i + 1
+                break
+        if body_start is None:
+            return issues, modified_lines
+
+        def _is_hdr(s: str) -> bool:
+            return len(s) >= 2 and s[1] == ':' and s[0].isalpha()
+
+        # 切分声部段
+        segments: List[Tuple[Optional[int], List[int]]] = []
+        cur_voice: Optional[int] = None
+        cur_music: List[int] = []
+
+        for i in range(body_start, len(lines)):
+            s = lines[i].lstrip()
+            if s.startswith('V:'):
+                if cur_music:
+                    segments.append((cur_voice, list(cur_music)))
+                cur_voice = i
+                cur_music = []
+            elif s and not _is_hdr(s) and not s.startswith('%'):
+                cur_music.append(i)
+
+        if cur_music:
+            segments.append((cur_voice, list(cur_music)))
+
+        # 无 V: 时整体作为一段
+        if not segments:
+            music_idxs = [i for i in range(body_start, len(lines))
+                          if lines[i].strip() and not _is_hdr(lines[i].lstrip())
+                          and not lines[i].lstrip().startswith('%')]
+            if music_idxs:
+                segments = [(None, music_idxs)]
+
+        for _, music_idxs in segments:
+            acc_state: dict = {}
+            for li in music_idxs:
+                raw_issues, fixed_line, acc_state = self._process_music_line(
+                    lines[li], acc_state, auto_fix
+                )
+                for (letter, om, exp_acc) in raw_issues:
+                    issues.append(Issue(
+                        line_index=li,
+                        description=(
+                            f"小节内音符 {letter}{om} 缺少应延续的升降号，"
+                            f"应修正为 {exp_acc}{letter}{om}"
+                        ),
+                        severity="warning",
+                    ))
+                if auto_fix:
+                    modified_lines[li] = fixed_line
+
+        return issues, modified_lines
+
+
 class CommentStripper(CheckerModule):
     """
     auto_fix=True 时清理输出：
@@ -1617,6 +1879,172 @@ class CommentStripper(CheckerModule):
             else:
                 cleaned.append(line)
         return [], cleaned
+
+
+class VoiceLineBreakAligner(CheckerModule):
+    """
+    统一各声部 (V:) 的音乐行换行位置。
+
+    算法：
+    1. 按 V: 分段，统计每个声部的音乐行及每行小节数。
+    2. 对拥有多行且换行一致（除末行外每行小节数相同）的声部进行投票，
+       选出最多声部认可的「小节数/行」作为基准 n（同票时取较小 n，即换行更密）。
+    3. 将所有「小节数/行 ≠ n」的声部的音乐行重新按 n 小节/行分行。
+    """
+
+    _BAR_SPLIT_RE = re.compile(r'(:\|:|:\||\|\]|\|\||\|:|\|)')
+
+    @staticmethod
+    def _is_non_music(s: str) -> bool:
+        stripped = s.lstrip()
+        if not stripped:
+            return True
+        if stripped.startswith('%'):
+            return True
+        if len(stripped) >= 2 and stripped[1] == ':' and stripped[0].isalpha():
+            return True
+        return False
+
+    def _split_measures(self, content: str) -> List[Tuple[str, str]]:
+        """将音乐内容按小节线分割，返回 [(小节内容, 小节线), ...] 列表。"""
+        parts = self._BAR_SPLIT_RE.split(content)
+        result = []
+        i = 0
+        while i + 1 < len(parts):
+            result.append((parts[i], parts[i + 1]))
+            i += 2
+        return result
+
+    def _count_measures(self, line: str) -> int:
+        return len(self._split_measures(line))
+
+    def _consistent_pattern(self, music_idxs: List[int], lines: List[str]) -> Optional[int]:
+        """若各行（末行除外）小节数一致，返回该小节数；否则返回 None。"""
+        if len(music_idxs) <= 1:
+            return None
+        counts = [self._count_measures(lines[i]) for i in music_idxs]
+        non_last = counts[:-1]
+        if len(set(non_last)) == 1 and non_last[0] > 0:
+            return non_last[0]
+        return None
+
+    def process(self, lines: List[str], auto_fix: bool) -> Tuple[List[Issue], List[str]]:
+        issues = []
+
+        body_start = None
+        for i, line in enumerate(lines):
+            if line.lstrip().startswith('K:'):
+                body_start = i + 1
+                break
+        if body_start is None:
+            return issues, list(lines)
+
+        # 按 V: 切分声部段
+        segments: List[Dict] = []
+        cur_v_idx: Optional[int] = None
+        cur_non_music: List[int] = []
+        cur_music: List[int] = []
+        in_header = True
+
+        def _flush():
+            if cur_v_idx is not None:
+                segments.append({
+                    'v_idx': cur_v_idx,
+                    'music_idxs': list(cur_music),
+                })
+
+        for i in range(body_start, len(lines)):
+            s = lines[i]
+            if s.lstrip().startswith('V:'):
+                _flush()
+                cur_v_idx = i
+                cur_non_music = []
+                cur_music = []
+                in_header = True
+            elif cur_v_idx is not None:
+                if in_header and self._is_non_music(s):
+                    cur_non_music.append(i)
+                elif s.strip():
+                    in_header = False
+                    cur_music.append(i)
+        _flush()
+
+        if len(segments) < 2:
+            return issues, list(lines)
+
+        # 为每段解析 vid 和换行模式
+        for seg in segments:
+            vb = lines[seg['v_idx']].lstrip()[2:].strip()
+            seg['vid'] = vb.split()[0] if vb else str(seg['v_idx'])
+            seg['pattern'] = self._consistent_pattern(seg['music_idxs'], lines)
+
+        # 投票选基准（仅多行且一致的声部参与投票）
+        vote_counter: Dict[int, int] = {}
+        for seg in segments:
+            if seg['pattern'] is not None and seg['music_idxs']:
+                vote_counter[seg['pattern']] = vote_counter.get(seg['pattern'], 0) + 1
+
+        if not vote_counter:
+            return issues, list(lines)
+
+        # 最多票优先；同票时取较小 n（换行更密）
+        canonical = max(vote_counter, key=lambda p: (vote_counter[p], -p))
+
+        to_fix = [
+            seg for seg in segments
+            if seg['music_idxs'] and seg['pattern'] != canonical
+        ]
+
+        if not to_fix:
+            return issues, list(lines)
+
+        voice_list = ', '.join(f"V:{seg['vid']}" for seg in to_fix)
+        issues.append(Issue(
+            line_index=body_start,
+            description=(
+                f"各声部换行不一致：基准为每 {canonical} 小节换行，"
+                f"需对齐的声部：{voice_list}"
+            ),
+            severity="warning",
+        ))
+
+        if not auto_fix:
+            return issues, list(lines)
+
+        # 构建替换映射：首个音乐行索引 → 新行列表，其余音乐行 → None（删除）
+        replacements: Dict[int, Optional[List[str]]] = {}
+        for seg in to_fix:
+            music_idxs = seg['music_idxs']
+            combined = re.sub(r'\s+', ' ',
+                              ' '.join(lines[i].rstrip() for i in music_idxs)).strip()
+
+            raw = self._split_measures(combined)
+            if not raw:
+                continue
+
+            measures = [(c.strip(), b) for c, b in raw]
+
+            new_lines = []
+            for start in range(0, len(measures), canonical):
+                chunk = measures[start:start + canonical]
+                new_lines.append(' '.join(f'{c} {b}' for c, b in chunk))
+
+            replacements[music_idxs[0]] = new_lines
+            for idx in music_idxs[1:]:
+                replacements[idx] = None
+
+        # 重建输出行列表
+        output: List[str] = []
+        for i, line in enumerate(lines):
+            if i in replacements:
+                repl = replacements[i]
+                if repl is not None:
+                    output.extend(repl)
+                # None → 此行已并入首行，跳过
+            else:
+                output.append(line)
+
+        return issues, output
 
 
 class ABCProcessor:
@@ -1688,7 +2116,9 @@ C,,1 |]
     engine.register_module(TempoEstimator())
     engine.register_module(VoiceBarCountChecker())
     engine.register_module(MeasureDurationChecker())
+    engine.register_module(BarAccidentalPropagator())
     engine.register_module(ClefAutoSelector())
+    engine.register_module(VoiceLineBreakAligner())
     engine.register_module(CommentStripper())
 
     print("执行纯检查模式：")
@@ -1749,3 +2179,27 @@ def gab|ded BAB|GAB dBG|A3 A3|]
     _, q_fixed = engine2.run_pipeline(demo_q, auto_fix=True)
     print("修复后：")
     print(q_fixed)
+
+    # --- 临时升降号传播检查演示 ---
+    print("\n=== 临时升降号传播检查演示 ===")
+    demo_acc = """X:1
+T:Accidental Propagation Demo
+M:4/4
+L:1/4
+K:C
+% 小节1: ^F 后续 F 未标升号；=B 后续 B 未标还原
+^F E F G | B ^c c c |
+% 小节2: 降号和双升号传播；小节线后重置
+_B A B G | ^^F E F2 |
+% 小节3: 和弦内升降号传播至后续裸音
+[^FA] F E F |]
+"""
+    engine_acc = ABCProcessor()
+    engine_acc.register_module(BarAccidentalPropagator())
+    acc_issues, _ = engine_acc.run_pipeline(demo_acc, auto_fix=False)
+    print("检查结果：")
+    for iss in acc_issues:
+        print(f"  [{iss.severity}] 行号 {iss.line_index} -> {iss.description}")
+    _, acc_fixed = engine_acc.run_pipeline(demo_acc, auto_fix=True)
+    print("修复后：")
+    print(acc_fixed)
