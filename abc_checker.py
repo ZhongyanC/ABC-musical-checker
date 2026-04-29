@@ -486,6 +486,11 @@ class ClefAutoSelector(CheckerModule):
         s = line.lstrip()
         return len(s) >= 2 and s[1] == ':' and s[0].isalpha()
 
+    @staticmethod
+    def _voice_id(line: str) -> Optional[str]:
+        m = re.match(r'\s*V:\s*(\S+)', line)
+        return m.group(1) if m else None
+
     def process(self, lines: List[str], auto_fix: bool) -> Tuple[List[Issue], List[str]]:
         issues: List[Issue] = []
         modified_lines = list(lines)
@@ -502,6 +507,16 @@ class ClefAutoSelector(CheckerModule):
             return issues, modified_lines
 
         global_clef = self._extract_clef(lines[k_line_idx]) or 'treble'
+
+        # 从所有 V: 行中收集各声部的默认谱号, 取每个声部 ID 首次出现且带谱号的那一行
+        # (V: 声明行在 K: 前后均可出现)
+        header_voice_clef: Dict[str, str] = {}
+        for line in lines:
+            if line.lstrip().startswith('V:'):
+                vid = self._voice_id(line)
+                c = self._extract_clef(line)
+                if vid and c and vid not in header_voice_clef:
+                    header_voice_clef[vid] = c
 
         # 把 body 按 V: 切分成段; 没出现 V: 则整体当作一段
         segments: List[Tuple[Optional[int], List[int]]] = []
@@ -532,7 +547,12 @@ class ClefAutoSelector(CheckerModule):
                 continue
 
             if voice_idx is not None:
-                current_clef = self._extract_clef(lines[voice_idx]) or global_clef
+                # 优先取 body V: 行上的谱号, 其次取头部 V: 声明, 最后取全局
+                body_clef = self._extract_clef(lines[voice_idx])
+                vid = self._voice_id(lines[voice_idx])
+                current_clef = (body_clef
+                                or (header_voice_clef.get(vid) if vid else None)
+                                or global_clef)
                 target_idx = voice_idx
             else:
                 current_clef = global_clef
@@ -566,6 +586,16 @@ class ClefAutoSelector(CheckerModule):
 
     # ---------- 小节级 inline clef 处理 ----------
 
+    # 匹配已存在的 inline 谱号字段: [K:treble], [K:bass], [K:clef=treble] 等
+    _INLINE_CLEF_RE = re.compile(
+        r'\[K:(?:clef=)?(' + '|'.join(('treble', 'bass', 'alto', 'tenor')) + r')\]'
+    )
+
+    def _extract_inline_clef(self, chunk: str) -> Optional[str]:
+        """返回 chunk 最左侧的 inline 谱号名 (若有)"""
+        m = self._INLINE_CLEF_RE.search(chunk)
+        return m.group(1) if m else None
+
     def _best_clef_for(self, pitches: List[int]) -> Optional[str]:
         if not pitches:
             return None
@@ -590,16 +620,18 @@ class ClefAutoSelector(CheckerModule):
             line_chunks[li] = parts
             for ci in range(0, len(parts), 2):
                 content = parts[ci]
+                existing_clef = self._extract_inline_clef(content)
                 cleaned = self._strip_non_music(content)
                 pitches = [self._note_to_midi(m)
                            for m in self.NOTE_RE.finditer(cleaned)]
                 # 纯空白 / 纯小节线装饰 (例如开头空 chunk) 跳过
-                if not cleaned.strip() and not pitches:
+                if not cleaned.strip() and not pitches and existing_clef is None:
                     continue
                 measures.append({
                     'line_idx': li,
                     'chunk_idx': ci,
                     'pitches': pitches,
+                    'existing_clef': existing_clef,
                 })
 
         if len(measures) < self.min_run_length + 1:
@@ -615,18 +647,31 @@ class ClefAutoSelector(CheckerModule):
 
         i = 0
         while i < len(measures):
+            # 若该 chunk 已有 inline 谱号标记, 更新 active 并跳过
+            existing = measures[i]['existing_clef']
+            if existing is not None and existing in self.CLEF_RANGES:
+                active = existing
+                i += 1
+                continue
+
             c = m_clefs[i]
             # 无音符 / 已经是当前谱号 -> 跳过
             if c is None or c == active:
                 i += 1
                 continue
             # 向前看: 统计连续偏好 c 的小节 (允许中间夹空小节)
+            # 遇到已有 inline 谱号的 chunk 则截止 (不跨越已有谱号切换)
             j = i
             run = 0
-            while j < len(measures) and m_clefs[j] in (c, None):
-                if m_clefs[j] == c:
-                    run += 1
-                j += 1
+            while j < len(measures):
+                if measures[j]['existing_clef'] is not None and j > i:
+                    break
+                if m_clefs[j] in (c, None):
+                    if m_clefs[j] == c:
+                        run += 1
+                    j += 1
+                else:
+                    break
             if run < self.min_run_length:
                 i = j
                 continue
@@ -2047,6 +2092,701 @@ class VoiceLineBreakAligner(CheckerModule):
         return issues, output
 
 
+class HarmonicAnalyzer(CheckerModule):
+    """
+    分析每个小节的和声属性。
+
+    权重规则（参考 ABC v2.1 §4.1）：
+    - 音高越低权重越大（低音决定和声基础）
+    - 时值越长权重越大
+    - 越靠近小节开头权重越大（开头音更能提示本小节和声）
+
+    算法：
+    1. 收集所有声部在同一小节序号的音符（MIDI 音高 + 时值 Fraction）
+    2. 以 weight = pitch_weight(midi) × duration × position_weight 累加音级权重
+    3. 对 12 个根音 × 10 种和弦类型逐一打分，取最优及次优
+    4. 若次优得分 / 最优得分 ≥ 阈值，则对每个声部按时值拆分前/后半小节，
+       分别判断和弦，若两半不同则报告和弦变换
+    """
+
+    _BAR_SPLIT_RE = re.compile(r'(:\|:|:\||\|\]|\|\||\|:|\|)')
+
+    _BASE_MIDI: Dict[str, int] = {
+        'C': 60, 'D': 62, 'E': 64, 'F': 65, 'G': 67, 'A': 69, 'B': 71,
+        'c': 72, 'd': 74, 'e': 76, 'f': 77, 'g': 79, 'a': 81, 'b': 83,
+    }
+
+    _PC_NAMES = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B']
+
+    _CHORD_TYPES: List[Tuple[str, List[int]]] = [
+        ('',     [0, 4, 7]),
+        ('m',    [0, 3, 7]),
+        ('dim',  [0, 3, 6]),
+        ('aug',  [0, 4, 8]),
+        ('7',    [0, 4, 7, 10]),
+        ('maj7', [0, 4, 7, 11]),
+        ('m7',   [0, 3, 7, 10]),
+        ('dim7', [0, 3, 6, 9]),
+        ('sus2', [0, 2, 7]),
+        ('sus4', [0, 5, 7]),
+    ]
+
+    # 升号/降号加入顺序（音高类别）
+    _SHARP_PCS = [5, 0, 7, 2, 9, 4, 11]   # F C G D A E B
+    _FLAT_PCS  = [11, 4, 9, 2, 7, 0, 5]   # B E A D G C F
+
+    _KEY_SIG: Dict[str, int] = {
+        'C': 0, 'Am': 0,
+        'G': 1, 'Em': 1,
+        'D': 2, 'Bm': 2,
+        'A': 3, 'F#m': 3,
+        'E': 4, 'C#m': 4,
+        'B': 5, 'G#m': 5,
+        'F#': 6, 'D#m': 6,
+        'C#': 7, 'A#m': 7,
+        'F': -1, 'Dm': -1,
+        'Bb': -2, 'Gm': -2,
+        'Eb': -3, 'Cm': -3,
+        'Ab': -4, 'Fm': -4,
+        'Db': -5, 'Bbm': -5,
+        'Gb': -6, 'Ebm': -6,
+        'Cb': -7, 'Abm': -7,
+    }
+
+    # 两个和弦得分之比的阈值：次优 / 最优 ≥ 该值才认为"和弦得分接近"
+    _CHANGE_RATIO = 0.85
+    # 第二根音 / 第一根音权重之比的阈值：≥ 该值才认为"两个根音都足够大且接近"
+    _ROOT_RATIO    = 0.60
+    # 每个根音至少要占小节总权重的比例（防止小权重根音凑数）
+    _ROOT_MIN_FRAC = 0.15
+    # 若七和弦的七音只占该和弦音总权重的很小比例，优先避免过度解释为七和弦
+    _WEAK_SEVENTH_MAX_FRAC = 0.15
+    _WEAK_SEVENTH_PENALTY = 0.16
+    # 根音几乎不存在时，避免把强三和弦误判为弱根音的转位/七和弦
+    _WEAK_ROOT_MAX_FRAC = 0.12
+    _WEAK_ROOT_PENALTY = 0.12
+    # 候选根音明显弱于本小节最强音时，降低转位/替代根音解释的优先级
+    _NON_DOMINANT_ROOT_RATIO = 0.75
+    _NON_DOMINANT_ROOT_PENALTY = 0.18
+    # 最强音作为根音且三和弦完整时，sus 候选常是加音而非真正挂留
+    _SUS_OVER_TRIAD_PENALTY = 0.15
+    # 候选分数非常接近时，用根音权重决胜
+    _ROOT_TIE_MARGIN = 0.05
+    # 小节内位置权重：越靠近小节开头，越能代表当前和声基础
+    _POSITION_WEIGHT_START = 1.40
+    _POSITION_WEIGHT_END = 0.55
+
+    def __init__(self, verbose: bool = False):
+        self.verbose = verbose
+
+    # ---------- 调号解析 ----------
+
+    def _parse_key_acc(self, lines: List[str]) -> Dict[int, int]:
+        """返回 {音高类别: 半音偏移} 的调号升降号映射。"""
+        for line in lines:
+            s = line.lstrip()
+            if not s.startswith('K:'):
+                continue
+            rest = s[2:].strip()
+            key_str = rest.split()[0] if rest else 'C'
+            if key_str.lower() in ('none', 'hp'):
+                return {}
+            n_acc = self._KEY_SIG.get(key_str)
+            if n_acc is None:
+                m = re.match(r'^([A-G][b#]?)', key_str)
+                n_acc = self._KEY_SIG.get(m.group(1), 0) if m else 0
+            result: Dict[int, int] = {}
+            if n_acc > 0:
+                for pc in self._SHARP_PCS[:n_acc]:
+                    result[pc] = 1
+            elif n_acc < 0:
+                for pc in self._FLAT_PCS[:-n_acc]:
+                    result[pc] = -1
+            return result
+        return {}
+
+    # ---------- 音符解析 ----------
+
+    def _parse_dur(self, s: str, pos: int) -> Tuple[Fraction, int]:
+        n = len(s)
+        num_s = ''
+        while pos < n and s[pos].isdigit(): num_s += s[pos]; pos += 1
+        slashes = 0
+        while pos < n and s[pos] == '/': slashes += 1; pos += 1
+        den_s = ''
+        while pos < n and s[pos].isdigit(): den_s += s[pos]; pos += 1
+        if not num_s and not slashes:
+            return Fraction(1), pos
+        num = int(num_s) if num_s else 1
+        den = (int(den_s) if den_s else 2 ** slashes) if slashes else 1
+        return Fraction(num, den), pos
+
+    def _to_midi(self, letter: str, octave_marks: str,
+                 acc_str: str, key_acc: Dict[int, int]) -> int:
+        midi = self._BASE_MIDI[letter]
+        midi += 12 * octave_marks.count("'")
+        midi -= 12 * octave_marks.count(',')
+        if acc_str:
+            delta = 0 if '=' in acc_str else acc_str.count('^') - acc_str.count('_')
+            midi += delta
+        else:
+            midi += key_acc.get(midi % 12, 0)
+        return midi
+
+    def _extract_notes(self, seg: str,
+                       key_acc: Dict[int, int]) -> List[Tuple[int, Fraction]]:
+        """从一个小节片段中提取 (midi, duration) 列表。"""
+        s = re.sub(r'%.*$', '', seg, flags=re.MULTILINE)
+        s = re.sub(r'"[^"]*"', '', s)
+        s = re.sub(r'\[[A-Za-z]:[^\]]*\]', '', s)
+        s = re.sub(r'\{[^}]*\}', '', s)
+        s = re.sub(r'![^!]*!', '', s)
+        s = re.sub(r'\+[^+]+\+', '', s)
+
+        notes: List[Tuple[int, Fraction]] = []
+        i, n = 0, len(s)
+        tuplet_stack: List[List] = []
+        _TQ = {2: 3, 3: 2, 4: 3, 5: 2, 6: 2, 7: 2, 8: 3, 9: 2}
+
+        def add(midi: int, dur: Fraction) -> None:
+            actual = dur
+            if tuplet_stack:
+                actual = dur * tuplet_stack[-1][1]
+                tuplet_stack[-1][0] -= 1
+                if tuplet_stack[-1][0] <= 0:
+                    tuplet_stack.pop()
+            notes.append((midi, actual))
+
+        while i < n:
+            c = s[i]
+            if c in ' \t\n~HLMOPSTuv.-_&\\': i += 1; continue
+            if c in '<>': i += 1; continue
+
+            if c == '(':
+                i += 1
+                p_s = ''
+                while i < n and s[i].isdigit(): p_s += s[i]; i += 1
+                if not p_s: continue
+                p = int(p_s); q = _TQ.get(p, 2); r = p
+                if i < n and s[i] == ':':
+                    i += 1
+                    q_s = ''
+                    while i < n and s[i].isdigit(): q_s += s[i]; i += 1
+                    if q_s: q = int(q_s)
+                    if i < n and s[i] == ':':
+                        i += 1
+                        r_s = ''
+                        while i < n and s[i].isdigit(): r_s += s[i]; i += 1
+                        if r_s: r = int(r_s)
+                if p > 0:
+                    tuplet_stack.append([r, Fraction(q, p)])
+                continue
+
+            if c == '[':
+                i += 1
+                if i < n and s[i].isdigit(): i += 1; continue
+                chord_notes: List[Tuple[int, Fraction]] = []
+                while i < n and s[i] != ']':
+                    acc = ''
+                    while i < n and s[i] in '^_=': acc += s[i]; i += 1
+                    if i < n and s[i] in 'ABCDEFGabcdefg':
+                        letter = s[i]; i += 1
+                        om = ''
+                        while i < n and s[i] in ",'": om += s[i]; i += 1
+                        inner_dur, i = self._parse_dur(s, i)
+                        chord_notes.append((
+                            self._to_midi(letter, om, acc, key_acc),
+                            inner_dur,
+                        ))
+                    elif i < n and s[i] in 'zx':
+                        i += 1
+                        while i < n and (s[i].isdigit() or s[i] == '/'): i += 1
+                    else:
+                        i += 1
+                if i < n and s[i] == ']': i += 1
+                outer_dur, i = self._parse_dur(s, i)
+                actual_outer = outer_dur
+                if tuplet_stack:
+                    actual_outer = outer_dur * tuplet_stack[-1][1]
+                    tuplet_stack[-1][0] -= 1
+                    if tuplet_stack[-1][0] <= 0:
+                        tuplet_stack.pop()
+                for m, inner_dur in chord_notes:
+                    notes.append((m, inner_dur * actual_outer))
+                continue
+
+            if c in '^_=':
+                acc = ''
+                while i < n and s[i] in '^_=': acc += s[i]; i += 1
+                if i < n and s[i] in 'ABCDEFGabcdefg':
+                    letter = s[i]; i += 1
+                    om = ''
+                    while i < n and s[i] in ",'": om += s[i]; i += 1
+                    dur, i = self._parse_dur(s, i)
+                    add(self._to_midi(letter, om, acc, key_acc), dur)
+                continue
+
+            if c in 'ABCDEFGabcdefg':
+                letter = c; i += 1
+                om = ''
+                while i < n and s[i] in ",'": om += s[i]; i += 1
+                dur, i = self._parse_dur(s, i)
+                add(self._to_midi(letter, om, '', key_acc), dur)
+                continue
+
+            if c in 'zxZX':
+                i += 1
+                while i < n and s[i].isdigit(): i += 1
+                continue
+
+            i += 1
+
+        return notes
+
+    # ---------- 和声评分 ----------
+
+    def _pitch_weight(self, midi: int) -> float:
+        """音越低权重越大：中央 C (60) = 1.0，每降一个八度 +1.0，上限 0.5。"""
+        return max(0.5, 1.0 + (60 - midi) / 12.0)
+
+    def _pc_weights(self, notes: List[Tuple[int, Fraction]]) -> Dict[int, float]:
+        w: Dict[int, float] = {}
+        for midi, dur in notes:
+            pc = midi % 12
+            weight = self._pitch_weight(midi) * float(dur)
+            w[pc] = w.get(pc, 0.0) + weight
+        return w
+
+    def _position_weight(self, start: Fraction, dur: Fraction,
+                         total_span: Fraction) -> float:
+        if total_span <= 0:
+            return 1.0
+
+        midpoint = float(start + dur / 2) / float(total_span)
+        midpoint = max(0.0, min(1.0, midpoint))
+        return (
+            self._POSITION_WEIGHT_START
+            - (self._POSITION_WEIGHT_START - self._POSITION_WEIGHT_END) * midpoint
+        )
+
+    def _timed_pc_weights(
+        self,
+        notes: List[Tuple[Fraction, int, Fraction]],
+    ) -> Dict[int, float]:
+        if not notes:
+            return {}
+
+        base_t = min(t for t, _, _ in notes)
+        total_end = max(t + dur for t, _, dur in notes)
+        total_span = total_end - base_t
+
+        w: Dict[int, float] = {}
+        for t, midi, dur in notes:
+            pc = midi % 12
+            rel_t = t - base_t
+            weight = (
+                self._pitch_weight(midi)
+                * float(dur)
+                * self._position_weight(rel_t, dur, total_span)
+            )
+            w[pc] = w.get(pc, 0.0) + weight
+        return w
+
+    def _score_chord(self, pcw: Dict[int, float],
+                     root: int, intervals: List[int]) -> float:
+        chord_pcs = {(root + iv) % 12 for iv in intervals}
+        total = sum(pcw.values())
+        if total == 0:
+            return 0.0
+        in_chord = sum(pcw.get(pc, 0.0) for pc in chord_pcs)
+        coverage = in_chord / total
+        penalty = (total - in_chord) / total
+        # 和弦完备率：和弦音中实际出现（权重>0）的比例；
+        # 缺席的和弦音说明该和弦对这组音而言可能是过度解释。
+        present = sum(1 for pc in chord_pcs if pcw.get(pc, 0.0) > 0)
+        completeness = present / len(chord_pcs)
+        return coverage - 0.5 * penalty + 0.1 * completeness
+
+    def _adjust_chord_score(self, pcw: Dict[int, float],
+                            root: int, suffix: str,
+                            intervals: List[int], score: float) -> float:
+        chord_pcs = [(root + iv) % 12 for iv in intervals]
+        chord_w = sum(pcw.get(pc, 0.0) for pc in chord_pcs)
+        if chord_w == 0:
+            return score
+
+        strongest_pc, strongest_w = max(pcw.items(), key=lambda x: x[1])
+        root_w = pcw.get(root, 0.0)
+        if root != strongest_pc and strongest_w > 0:
+            if root_w / strongest_w < self._NON_DOMINANT_ROOT_RATIO:
+                score -= self._NON_DOMINANT_ROOT_PENALTY
+
+        if root == strongest_pc and suffix in ('sus2', 'sus4'):
+            major = {(root + iv) % 12 for iv in (0, 4, 7)}
+            minor = {(root + iv) % 12 for iv in (0, 3, 7)}
+            if (
+                all(pcw.get(pc, 0.0) > 0 for pc in major)
+                or all(pcw.get(pc, 0.0) > 0 for pc in minor)
+            ):
+                score -= self._SUS_OVER_TRIAD_PENALTY
+
+        root_frac = pcw.get(root, 0.0) / chord_w
+        if root_frac < self._WEAK_ROOT_MAX_FRAC:
+            score -= self._WEAK_ROOT_PENALTY
+
+        if suffix not in ('7', 'maj7', 'm7', 'dim7') or len(intervals) < 4:
+            return score
+
+        seventh_pc = chord_pcs[3]
+        seventh_frac = pcw.get(seventh_pc, 0.0) / chord_w
+        if seventh_frac < self._WEAK_SEVENTH_MAX_FRAC:
+            return score - self._WEAK_SEVENTH_PENALTY
+
+        return score
+
+    def _top_chords(self, pcw: Dict[int, float],
+                    top_n: int = 2) -> List[Tuple[str, float]]:
+        if not pcw:
+            return []
+        candidates = []
+        for root in range(12):
+            for suffix, ivs in self._CHORD_TYPES:
+                score = self._score_chord(pcw, root, ivs)
+                if score > 0:
+                    score = self._adjust_chord_score(pcw, root, suffix, ivs, score)
+                    root_w = pcw.get(root, 0.0)
+                    candidates.append((self._PC_NAMES[root] + suffix, score, root_w))
+        candidates.sort(key=lambda x: (-x[1], -x[2]))
+
+        best_score = candidates[0][1]
+        close = [c for c in candidates if best_score - c[1] <= self._ROOT_TIE_MARGIN]
+        rest = [c for c in candidates if best_score - c[1] > self._ROOT_TIE_MARGIN]
+        close.sort(key=lambda x: (-x[2], -x[1]))
+
+        ranked = close + rest
+        return [(name, score) for name, score, _ in ranked[:top_n]]
+
+    def _best_chord_for_root(self, pcw: Dict[int, float], root: int) -> Optional[str]:
+        """为已知根音选和弦名；优先避免把明确根音段落解释成倒置和弦。"""
+        if not pcw:
+            return None
+
+        complete_simple: List[Tuple[str, float, float]] = []
+        for suffix, ivs in self._CHORD_TYPES:
+            if suffix not in ('', 'm', 'sus2', 'sus4'):
+                continue
+            chord_pcs = {(root + iv) % 12 for iv in ivs}
+            if all(pcw.get(pc, 0.0) > 0 for pc in chord_pcs):
+                score = self._score_chord(pcw, root, ivs)
+                in_chord = sum(pcw.get(pc, 0.0) for pc in chord_pcs)
+                complete_simple.append((self._PC_NAMES[root] + suffix, score, in_chord))
+
+        if complete_simple:
+            complete_simple.sort(key=lambda x: (-x[2], -x[1]))
+            return complete_simple[0][0]
+
+        return None
+
+    # ---------- 小节分割 ----------
+
+    def _split_measures(self, music: str) -> List[str]:
+        parts = self._BAR_SPLIT_RE.split(music)
+        return parts[::2]
+
+    # ---------- 带时间戳的音符提取（用于跨声部对齐） ----------
+
+    def _extract_timed_notes(self, seg: str,
+                             key_acc: Dict[int, int]) -> List[Tuple[Fraction, int, Fraction]]:
+        """
+        提取 (start_time, midi, duration) 列表，同一和弦内的音符共享相同 start_time。
+        休止符 (z/x/Z/X) 不产生条目，但会推进时间轴。
+        """
+        s = re.sub(r'%.*$', '', seg, flags=re.MULTILINE)
+        s = re.sub(r'"[^"]*"', '', s)
+        s = re.sub(r'\[[A-Za-z]:[^\]]*\]', '', s)
+        s = re.sub(r'\{[^}]*\}', '', s)
+        s = re.sub(r'![^!]*!', '', s)
+        s = re.sub(r'\+[^+]+\+', '', s)
+
+        result: List[Tuple[Fraction, int, Fraction]] = []
+        t = Fraction(0)
+        i, n = 0, len(s)
+        tuplet_stack: List[List] = []
+        _TQ = {2: 3, 3: 2, 4: 3, 5: 2, 6: 2, 7: 2, 8: 3, 9: 2}
+
+        def actual_dur(raw: Fraction) -> Fraction:
+            d = raw
+            if tuplet_stack:
+                d = raw * tuplet_stack[-1][1]
+                tuplet_stack[-1][0] -= 1
+                if tuplet_stack[-1][0] <= 0:
+                    tuplet_stack.pop()
+            return d
+
+        while i < n:
+            c = s[i]
+            if c in ' \t\n~HLMOPSTuv.-_&\\': i += 1; continue
+            if c in '<>': i += 1; continue
+
+            if c == '(':
+                i += 1
+                p_s = ''
+                while i < n and s[i].isdigit(): p_s += s[i]; i += 1
+                if not p_s: continue
+                p = int(p_s); q = _TQ.get(p, 2); r = p
+                if i < n and s[i] == ':':
+                    i += 1
+                    q_s = ''
+                    while i < n and s[i].isdigit(): q_s += s[i]; i += 1
+                    if q_s: q = int(q_s)
+                    if i < n and s[i] == ':':
+                        i += 1
+                        r_s = ''
+                        while i < n and s[i].isdigit(): r_s += s[i]; i += 1
+                        if r_s: r = int(r_s)
+                if p > 0:
+                    tuplet_stack.append([r, Fraction(q, p)])
+                continue
+
+            if c == '[':
+                i += 1
+                if i < n and s[i].isdigit(): i += 1; continue
+                chord_notes: List[Tuple[int, Fraction]] = []
+                while i < n and s[i] != ']':
+                    acc = ''
+                    while i < n and s[i] in '^_=': acc += s[i]; i += 1
+                    if i < n and s[i] in 'ABCDEFGabcdefg':
+                        letter = s[i]; i += 1
+                        om = ''
+                        while i < n and s[i] in ",'": om += s[i]; i += 1
+                        inner_dur, i = self._parse_dur(s, i)
+                        chord_notes.append((
+                            self._to_midi(letter, om, acc, key_acc),
+                            inner_dur,
+                        ))
+                    elif i < n and s[i] in 'zx':
+                        i += 1
+                        while i < n and (s[i].isdigit() or s[i] == '/'): i += 1
+                    else:
+                        i += 1
+                if i < n and s[i] == ']': i += 1
+                outer_raw, i = self._parse_dur(s, i)
+                outer_dur = actual_dur(outer_raw)
+                chord_durs = [inner * outer_dur for _, inner in chord_notes]
+                for (m, _), d in zip(chord_notes, chord_durs):
+                    result.append((t, m, d))   # 同一和弦共享 start_time
+                if chord_durs:
+                    t += max(chord_durs)        # 时间轴按最长和弦音推进一次
+                continue
+
+            if c in '^_=':
+                acc = ''
+                while i < n and s[i] in '^_=': acc += s[i]; i += 1
+                if i < n and s[i] in 'ABCDEFGabcdefg':
+                    letter = s[i]; i += 1
+                    om = ''
+                    while i < n and s[i] in ",'": om += s[i]; i += 1
+                    raw, i = self._parse_dur(s, i)
+                    d = actual_dur(raw)
+                    result.append((t, self._to_midi(letter, om, acc, key_acc), d))
+                    t += d
+                continue
+
+            if c in 'ABCDEFGabcdefg':
+                letter = c; i += 1
+                om = ''
+                while i < n and s[i] in ",'": om += s[i]; i += 1
+                raw, i = self._parse_dur(s, i)
+                d = actual_dur(raw)
+                result.append((t, self._to_midi(letter, om, '', key_acc), d))
+                t += d
+                continue
+
+            if c in 'zx':                    # 单小节休止：推进时间，不产生音符
+                i += 1
+                raw, i = self._parse_dur(s, i)
+                t += actual_dur(raw)
+                continue
+
+            if c in 'ZX':                    # 多小节休止：直接跳过计数
+                i += 1
+                while i < n and s[i].isdigit(): i += 1
+                continue
+
+            i += 1
+
+        return result
+
+    # ---------- 和弦变换检测 ----------
+
+    def _detect_change_by_roots(self, voice_segs: List[str], key_acc: Dict[int, int],
+                                r1_pc: int, r2_pc: int) -> Optional[Tuple[str, str]]:
+        """
+        将所有声部的带时间戳音符合并到同一时间轴（各声部均从 t=0 起），
+        按时间排序后扫描：找到 r2_pc 累积权重首次超过 r1_pc 的时刻为分割点；
+        若无明确超越点则以总时长中点作为回退。
+        分割后分别判断前/后段最优和弦，若不同则返回 (和弦1, 和弦2)。
+        """
+        timeline: List[Tuple[Fraction, int, Fraction]] = []
+        for seg in voice_segs:
+            timeline.extend(self._extract_timed_notes(seg, key_acc))
+
+        if not timeline:
+            return None
+
+        timeline.sort(key=lambda x: x[0])
+
+        # 找根音切换点
+        cum_r1 = 0.0
+        cum_r2 = 0.0
+        split_t: Optional[Fraction] = None
+        for t, midi, dur in timeline:
+            pc = midi % 12
+            w = self._pitch_weight(midi) * float(dur)
+            if pc == r1_pc:
+                cum_r1 += w
+            elif pc == r2_pc:
+                cum_r2 += w
+            if split_t is None and cum_r2 > cum_r1 and cum_r1 > 0:
+                split_t = t   # r2 累积权重刚超过 r1 的那一刻
+
+        if split_t is None:
+            # 回退：以总时长中点分割
+            total_end = max(t + dur for t, _, dur in timeline)
+            split_t = total_end / 2
+
+        first_notes = [(t, midi, dur) for t, midi, dur in timeline if t < split_t]
+        second_notes = [(t, midi, dur) for t, midi, dur in timeline if t >= split_t]
+
+        if not first_notes or not second_notes:
+            return None
+
+        pcw1 = self._timed_pc_weights(first_notes)
+        pcw2 = self._timed_pc_weights(second_notes)
+        top1 = self._top_chords(pcw1, top_n=1)
+        top2 = self._top_chords(pcw2, top_n=1)
+        name1 = self._best_chord_for_root(pcw1, r1_pc) or (top1[0][0] if top1 else None)
+        name2 = self._best_chord_for_root(pcw2, r2_pc) or (top2[0][0] if top2 else None)
+        if name1 and name2 and name1 != name2:
+            return name1, name2
+        return None
+
+    # ---------- 主流程 ----------
+
+    def process(self, lines: List[str], auto_fix: bool) -> Tuple[List[Issue], List[str]]:
+        issues: List[Issue] = []
+
+        k_idx = next((i for i, l in enumerate(lines)
+                      if l.lstrip().startswith('K:')), None)
+        if k_idx is None:
+            return issues, list(lines)
+
+        key_acc = self._parse_key_acc(lines[:k_idx + 1])
+
+        # 按声部收集音乐行
+        voice_music: Dict[str, List[str]] = {}
+        current_vid = '__global__'
+        for i in range(k_idx + 1, len(lines)):
+            s = lines[i].lstrip()
+            if s.startswith('V:'):
+                m = re.match(r'V:\s*(\S+)', s)
+                current_vid = m.group(1) if m else str(i)
+            elif s and not s.startswith('%') and not (len(s) >= 2 and s[1] == ':' and s[0].isalpha()):
+                voice_music.setdefault(current_vid, []).append(lines[i])
+
+        # 每个声部切分为小节列表
+        voice_measures: Dict[str, List[str]] = {}
+        for vid, mlines in voice_music.items():
+            combined = ' '.join(l.rstrip() for l in mlines)
+            segs = [seg for seg in self._split_measures(combined) if seg.strip()]
+            if segs:
+                voice_measures[vid] = segs
+
+        if not voice_measures:
+            return issues, list(lines)
+
+        max_bars = max(len(v) for v in voice_measures.values())
+
+        for bar_idx in range(max_bars):
+            all_notes: List[Tuple[Fraction, int, Fraction]] = []
+            bar_segs: List[str] = []
+            for segs in voice_measures.values():
+                if bar_idx < len(segs):
+                    seg = segs[bar_idx]
+                    ns = self._extract_timed_notes(seg, key_acc)
+                    all_notes.extend(ns)
+                    if ns:
+                        bar_segs.append(seg)
+
+            if not all_notes:
+                continue
+
+            pcw = self._timed_pc_weights(all_notes)
+            top = self._top_chords(pcw, top_n=2)
+            if not top:
+                continue
+
+            bar_num = bar_idx + 1
+            best_name, best_score = top[0]
+
+            # 按权重排序找出前两根音
+            total_w = sum(pcw.values())
+            sorted_roots = sorted(pcw.items(), key=lambda x: -x[1])
+            r1_pc, r1_w = sorted_roots[0]
+
+            chord_scores_close = (
+                len(top) >= 2 and top[1][1] > 0
+                and min(top[1][1], best_score) / max(top[1][1], best_score) >= self._CHANGE_RATIO
+            )
+
+            # 只有两个根音都足够大且接近时才考虑和弦变换
+            roots_competing = False
+            r2_pc = r1_pc
+            if len(sorted_roots) >= 2:
+                r2_pc, r2_w = sorted_roots[1]
+                root_ratio = r2_w / r1_w if r1_w > 0 else 0
+                roots_competing = (
+                    root_ratio >= self._ROOT_RATIO
+                    and r1_w / total_w >= self._ROOT_MIN_FRAC
+                    and r2_w / total_w >= self._ROOT_MIN_FRAC
+                )
+
+            if roots_competing and chord_scores_close:
+                change = self._detect_change_by_roots(bar_segs, key_acc, r1_pc, r2_pc)
+                if change:
+                    r2_w_val = pcw.get(r2_pc, 0.0)
+                    ratio_str = f"{r2_w_val / r1_w:.0%}"
+                    desc = (
+                        f"第 {bar_num} 小节：和弦变换 {change[0]} → {change[1]}"
+                        f"（根音 {self._PC_NAMES[r1_pc]}={r1_w:.1f} / "
+                        f"{self._PC_NAMES[r2_pc]}={r2_w_val:.1f}，"
+                        f"权重比 {ratio_str}）"
+                    )
+                else:
+                    desc = f"第 {bar_num} 小节：推断和弦 {best_name}（得分 {best_score:.2f}）"
+            elif chord_scores_close:
+                second_name, second_score = top[1]
+                close_ratio = min(second_score, best_score) / max(second_score, best_score)
+                desc = (
+                    f"第 {bar_num} 小节：推断和弦 {best_name}"
+                    f"（次选 {second_name}，和弦得分接近 {close_ratio:.0%}）"
+                )
+            else:
+                desc = f"第 {bar_num} 小节：推断和弦 {best_name}（得分 {best_score:.2f}）"
+
+            # verbose 模式附加根音权重明细
+            if self.verbose:
+                sorted_pcw = sorted(pcw.items(), key=lambda x: -x[1])
+                detail = '  '.join(
+                    f"{self._PC_NAMES[pc]}={w:.2f}" for pc, w in sorted_pcw
+                )
+                desc += f"\n  权重明细：{detail}"
+
+            issues.append(Issue(line_index=k_idx + 1, description=desc, severity="info"))
+
+        return issues, list(lines)
+
+
 class ABCProcessor:
     """
     核心处理引擎
@@ -2120,6 +2860,7 @@ C,,1 |]
     engine.register_module(ClefAutoSelector())
     engine.register_module(VoiceLineBreakAligner())
     engine.register_module(CommentStripper())
+    engine.register_module(HarmonicAnalyzer())
 
     print("执行纯检查模式：")
     issues, _ = engine.run_pipeline(sample_abc, auto_fix=False)
@@ -2203,3 +2944,17 @@ _B A B G | ^^F E F2 |
     _, acc_fixed = engine_acc.run_pipeline(demo_acc, auto_fix=True)
     print("修复后：")
     print(acc_fixed)
+
+    # --- 和声分析演示（example.abc）---
+    import os
+    example_path = os.path.join(os.path.dirname(__file__), 'abc/thisgame.abc')
+    if os.path.exists(example_path):
+        print("\n=== 和声分析演示（example.abc）===")
+        with open(example_path, encoding='utf-8') as f:
+            example_abc = f.read()
+        engine_harm = ABCProcessor()
+        engine_harm.register_module(HarmonicAnalyzer(verbose=True))
+        harm_issues, _ = engine_harm.run_pipeline(example_abc, auto_fix=False)
+        print(f"共分析 {len(harm_issues)} 个小节：")
+        for iss in harm_issues:
+            print(f"  [和声] {iss.description}")

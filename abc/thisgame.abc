@@ -1,0 +1,52 @@
+X:1
+T:No GameNo LifeOP
+%%score { ( 1 2 ) | ( 3 4 ) }
+M:4/4
+I:linebreak 
+Q:1/4=80
+L:1/16
+K:E
+V:1 treble nm="Piano"
+%%MIDI program 0
+V:2 treble
+%%MIDI program 0
+V:3 treble
+%%MIDI program 0
+V:4 treble
+%%MIDI program 0
+V:1
+L:1/16
+ !>![ge]3 d3e2f3 b3a z | !>![gc]3 c3e2f3 b3a z | !>![gB]3 B3d2e3 f3g z | !>![gc^A]3 f3c2 c6 de | [fcB]6 ed B6 fg |
+ [eBa]6 gf g6 g2 | [gcA]3 f3c c2c2 d2e2 z | [Ge^B]3 d3e !>![aA]4 !>![gG]4 z | [G,EC]8 [FF,]3 [BB,]3[AA,] z | [GEC]8 F3 B3A z |
+ [GEB,]8 [GE]3 c3G z | [CB]3 ^A3F2 F6 C D | [EB,]3 C3G2G2F2F2G2 | z4 z2e'd' b8 | !>![CA,]2[CA,]2 [CA,]2!>![DB,]2 [DB,]2[DB,]2 !>![EC]2[EC]2 |
+ !>![EC]4 [GEB,]4 [EB,A]4 [EBB,]4 | [FBB,]6 [FB,]4 d2 [fd]2d2 | [fdb]8 DEFG ABcd | [ec]3d3G2 G2c2 d2e2 | [eA]3d3E2 E2B2 d4 |
+ [Ge]3d3G2 G2c2 d2e2 | [eB]3d3F2 F2[c'c]2 [d'd]2[e'e]2 | [ge'ec']3[d'd]3[ge'ec']2 [ge'ec']2[bB]2 [d'd]2[e'e]2 | [e'ec'a]3[d'd]3[e'ec'a]2 [e'e]2[bB]2 [d'd]2[e'e]2 | [ge'eb]3[d'd]3[ge'eb]2 [e'e]2[bB]2 [d'd]2[e'e]2 |
+ !>![g'gd'b]2z[a'a]2z[f'fd'b]2 [f'fd'b]2[e'e]2 [e'e]2z2 || [EB,]3D2z!>![FD]2 [FD]2E2D2E B, | z2B,E Bebe' b'e'be BEB,2 | [EB,]3D2z!>![FD]2 [FD]2E2D2E2 |
+ [gGeB]2z[aA]2z[fFdB]2 [fFdB]2e2 B4 | [EB,]3D2z!>![FD]2 [FD]2E2D2E B, | z2E,,E Bebe' a''e'be BEB,2 | [EB,]3D2z!>![FD]2 [FD]2E2D2E2 | %33 z16
+V:2
+L:1/16
+ x16 | x16 | x16 | x16 | x16 |
+ x16 | x16 | x16 | x16 | x16 |
+ x16 | x16 | x16 | [FDB,]16 | x16 |
+ x16 | x16 | x16 | x16 | x16 |
+ x16 | x16 | x16 | x16 | x16 |
+ x16 || x16 | B,12 z4 | x16 |
+ x16 | x16 | B,12 z4 | x16 | %33 z4
+V:3 clef=bass
+L:1/16
+ [K:clef=treble]C2G2 G12 | A,2E2 A12 | E,2B,2 E12 | F,2C2F2G2 ^A8 | A,2E2 A4 A2 E2 A,4 |[K:clef=bass]
+ E,2B,2 E4 E2 B,2 E,4 | F,2C2 F4 D,2^A,2 D4 | G,2D2G2G2 D2 G,4 z2 |[K:bass] C,,2G,,2 C,4 C,2G,,2 C,4 | A,,2E,2 A,2A,2 A,2E,2 A,,4 |
+ E,,2B,,2 E,4 E,2B,,2 E,4 | F,,2C,2F,2G,2 ^A,4 F,,4 | A,,2E,2A,2B,2B,2B,2 B,4 | B,,2F,2 B,12 | A,,2A,,2 A,,2A,,2 A,,2A,,2 A,,2A,,2 |
+ A,,2A,,,2 A,,2A,,,2 A,,2A,,,2 A,,2A,,,2 | B,,2B,,2 B,,2B,,2 B,,2B,,2 B,,2B,,2 | B,,8 B,8[K:treble] | [GC]16 | [EA,]16 |
+ [EE,B,]16 | [FF,C]8[K:bass] G,,G,G,,G, G,,G,G,,2 | z3[E,C]3[G,2E2C2] [G,2E2C2]E,2 [G,2E2C2]E,2 | z3[E,C]3[E2C2A,2] [E2C2A,2]E,2 [E2C2A,2]E,2 | z3[E,B,]3[G,2E2B,2] [G,2E2B,2]E,2 [G,2E2B,2]E,2 |
+ [D,,2D,,,2]z2z[F,2D2B,2] [F,2D2B,2][D,2D,,2] [D,,2D,,,2]z2 z || [C,2C,,2]C,,[G,,2C,2]z[G,,2E,2C,2] [G,,E,C,]3 C,, [G,,C,]4 | A,,,2E,,A,, A,,,2E,,A,, A,,,2E,,A,, A,,,2E,,A,, | [B,,2B,,,2]B,,,[F,,2B,,2]z[F,,2D,2B,,2] [F,,D,B,,]3 B,,, [F,,B,,]4 |
+ [E,2E,,2]E,[G,2E2B,2]z[D,2D,,2] [D,2D,,2]F,B, DB,F,2 | [G,,2G,,,2]G,,,[G,,2B,,2]z[G,,2E,2B,,2] [G,,E,B,,]3 G,,, [G,,B,,]4 | A,,,2A,, A,,,2E,,A,, A,,,2E,,A,, A,,,2E,,A,, z | [B,,2B,,,2]B,,,[F,,2B,,2]z[F,,2D,2B,,2] [F,,D,B,,]3 B,,, [F,,B,,]4 | %33 z8
+V:4 clef=bass
+L:1/16
+ x16 | x16 | x16 | x16 | x16 |
+ x16 | x16 | x16 |[K:bass] x16 | x16 |
+ x16 | x16 | x16 | x16 | A,,,6 A,,,6 A,,,4 |
+ A,,,16 | B,,,6 B,,,6 B,,,4 | x16[K:treble] | x16 | z16 |
+ x16 | x16[K:bass] | [C,,C,,,]16 | [A,,A,,,]16 | [E,,E,,,]16 |
+[D,2B,2] z14 || x16 | x16 | x16 |
+ x16 | x16 | x16 | x16 | %33 z8

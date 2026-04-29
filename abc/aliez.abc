@@ -1,0 +1,74 @@
+X:1
+T:Performed by Mizuki
+%%score { ( 1 2 3 ) | ( 4 5 6 ) }
+M:4/4
+I:linebreak 
+Q:1/4=108
+L:1/16
+K:G
+V:1 bass nm="Piano"
+%%MIDI program 0
+V:2 bass
+%%MIDI program 0
+V:3 bass
+%%MIDI program 0
+V:4 bass
+%%MIDI program 0
+V:5 bass
+%%MIDI program 0
+V:6 bass
+%%MIDI program 0
+V:1 clef=treble
+L:1/16
+ [K:clef=bass]E,2G,2 E,2G,2 F,3B,,3B,, z | E,2G,2 E,2G,2 F,3B,,3B,, z | E,2G,2 E,2G,2 F,3B,,3B,, z | E,2G,2 E,2G,2 [F,^D,]3B,,3B,, z |[K:treble] [G2e2][g2B2][G2e2][g2B2][fA]3[EB]3 [E2B2] |
+ [g2e'2][g'2b2][g2e'2] [g'2b2] [f'a]3 [eb]3[e2b2] | [g2e'2][g'2b2][g2e'2] [g'2b2][f'a]3[eb]3[e2b2] | [g2e'2][g'2b2][g2e'2] [g'2b2][f'2a2] B,[F2E2B2B,2]B, [F2E2B2B,2] | z4 z2B,B, B,2B,2D2 E2 | z4 z2B,B, B,2B,2D2 E2 |
+ z2B,2 D2E2 E2B, B,D2E2 | F2G2 F2G2 F2D2 D4 | [eB]3f3B,B, B,2B,2 D2E2 | [ec]3f3b F2G2 E4 z |
+ [ec]3f3[F2b2]E2F2G2 z2 | A2G2 G2[F2b2]F3 !tenuto!B,3B,2 | E2D2 E2GE E2D2 E2GA | A2G2 G2E2 !tenuto!A3E3 z2 |
+ E2D2 E2GE E2D2 E2GF | F2D2 D2B,2D3D2 z3 | [G2e2]d2 [G2e2]ge e2d2 [G2e2]g[fdaA] |
+ [f2d2a2A2]g2 [g2A2]e2 [fdaA]3e3 z2 | B2g2 [f2B2]de e2g2 [f2B2]e[fBA] | [fBA]8 z2!tenuto![bB]3!tenuto![eE]3 ||
+ [gebB]4 [g2d'2d2b2] [bB]4 [gebB]3[eE]3 | [gebB]4 [g2d'2d2b2] [bB]4 [gebB]3[eE]3 | [gebB]4 [g2e2c'2c2] [bB]4 [gebB]3z z2 | [f2d2a2A2][g2G2] [f2d2a2A2][g2G2][febB]3 [F2e2E2B2][eE]3 | %28 z8
+V:2 clef=treble
+L:1/16
+ x16 | x16 | x16 | x16 |[K:treble] x16 |
+ x16 | x16 | x16 | [FEBB,]16 | x16 |
+ x16 | x16 | z4 z2b2 b8 | z4 G2F2 b8 |
+ z4 E2G2 z8 | e3f3 b8 z2 | x16 |E2 z14 |
+ x16 |F3 z13 | x16 |
+ x16 | x16 | x16 ||
+ x16 | x16 |[eE]3 z13 | x16 | %28 z8
+V:3 clef=treble
+L:1/16
+ x16 | x16 | x16 | x16 |[K:treble] x16 |
+ x16 | x16 | x16 | x16 | x16 |
+ x16 | x16 | x16 | x16 |
+ b8 z8 | x16 | x16 | x16 |
+ x16 | x16 | x16 |
+e2 z14 | x16 | x16 ||
+ x16 | x16 | x16 | x16 | %28 z8
+V:4
+L:1/16
+ [E,,E,,,]16 | [C,C,,]16 | x16 | [B,,B,,,]16 | E,3 F,3E,2E, B,3F,2 E,2 |
+ z2zF,3E,2 E,B,3F,2E,2 | z2zF,3 E,2E,B,3F,E,2 z | z2zF,3 E,2 [D,D,,]8 | z2zB,, E,2B,,E,, E,,E,,2B,, !tenuto!E,4 | z2zG,, !tenuto!E,2G,,C,, C,,C,,2G,, !tenuto!E,4 |
+ z2zE, A,2E,A,, A,,A,,2 E, A,4 | z2zF, B,2F,B,, B,,B,,,B,,B,, B,F,B,,B,, | z2B,,E, G,4 G,E,,B,,E, G,E,E,,2 | z2G,C E3C, C,C,G,C CG,C,2 |
+ z2E,A, C2A,,A,, A,,E,A,C A,A,,2 z | z2G,B, E2 B,,B,,B,,,B,, ^D,F,D,B,,2 z | C,,C,C,,C, E,C,C,C,, C,C,,C,,C, E,C,C,C, | D,,D,D,,D, F,D,D,D,, D,D,,D,,F, D,D,D, z |
+ A,,E,A,,E, A,E,E,A,, E,A,,A,,E, A,E,E,E, | G,,D,G,,D, G,D,G,,D, G,,G,,D,G, D,D,D, z | C,,C,C,,C, E,C,C,C,, C,C,,C,,C, E,C,C,C, |
+ D,,D,D,,D, F,D,D,D,, D,D,,D,,[F,A,] D,D,D, z | G,,D,G,,D, G,D,D,G,, D,G,,G,,D, G,D,D,D, | z2E,A, B,EFB B4 z2zE,, ||
+ z2E,G, [EB,]2E,,E, E,E,,E,E, [EB,]G,E,E,, | z2C,E, [G,C]2C,,C, C,C,,C,C, [G,C]E,C,C,, | z2A,,C, [E,A,]2A,,,A,, A,,A,,,A,,A,, [E,A,]C,A,,A,,, | z2zE, [G,B,]3 E,z2B,, F,B,F,B,, B,,, | %28 z16
+V:5
+L:1/16
+ x16 | x16 | [A,,A,,,]16 | x16 | E,,16 |
+ [G,,G,,,]16 | [A,,A,,,]16 | [C,C,,]8 z8 | E,,16 | C,,16 |
+ A,,16 | B,,16 | E,,16 | C,,16 |
+ A,,16 | B,,8 z8 | z4 G,4 z4 G,4 | z4 A,4 z4 z4 |
+ z4 C4 z4 C4 | z4 B,4 B,4 z4 | z4 G,4 z4 G,4 |
+ z4 A,4 z4 z4 | z4 B,4 z4 B,4 | A,,12 z4 ||
+ [E,,E,,,]16 | [C,,C,,,]16 | [A,,A,,,]16 | [G,,G,,,]8 [B,,B,,,]8 | %28 z4
+V:6
+L:1/16
+ x16 | x16 | x16 | x16 | x16 |
+ x16 | x16 | x16 | x16 | x16 |
+ x16 | x16 | x16 | x16 |
+ x16 | x16 | x16 | A,4 z12 |
+ x16 | x16 | x16 |
+ x16 | x16 | x16 ||
+ x16 | x16 | x16 | x16 | %28 z4
