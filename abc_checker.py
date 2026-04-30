@@ -2245,7 +2245,7 @@ _B A B G | ^^F E F2 |
 
     # --- 和声分析演示（example.abc）---
     import os
-    example_path = os.path.join(os.path.dirname(__file__), 'abc/btvn2.abc')
+    example_path = os.path.join(os.path.dirname(__file__), 'abc/thisgame.abc')
     if os.path.exists(example_path):
         print("\n=== 和声分析演示（example.abc）===")
         with open(example_path, encoding='utf-8') as f:

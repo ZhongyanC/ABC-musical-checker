@@ -139,6 +139,8 @@ class HarmonicAnalyzer(CheckerModule):
     # 小节内位置权重：越靠近小节开头，越能代表当前和声基础
     _POSITION_WEIGHT_START = 1.40
     _POSITION_WEIGHT_END = 0.55
+    # 功能和声证据接近时，允许强主音/低音中心决定关系大小调。
+    _TONIC_CENTER_RATIO = 1.35
 
     def __init__(self, verbose: bool = False, chord_voice: bool = False):
         self.verbose = verbose
@@ -271,6 +273,11 @@ class HarmonicAnalyzer(CheckerModule):
             return minor_name, 'minor', confidence
         if all_mode == 'major' and bass_mode in ('major', 'neutral') and major_w >= minor_w * 1.08:
             return major_name, 'major', confidence
+        if all_mode == 'neutral' and bass_mode == 'neutral':
+            if minor_w >= major_w * self._TONIC_CENTER_RATIO:
+                return minor_name, 'minor', confidence
+            if major_w >= minor_w * self._TONIC_CENTER_RATIO:
+                return major_name, 'major', confidence
         return major_name, 'neutral', confidence
 
     def _diatonic_third_suffix(self, root: int, key_acc: Dict[int, int],
