@@ -1,0 +1,11 @@
+V:4 treble nm="Harmony"
+%%MIDI program 0
+L:1/16
+[C,E,G,]8[G,CE]8 | [C,E,G,]8[G,CE]8 | [C,E,G,]8[G,CE]8 |
+[C,E,G,]8[G,CE]8 | [C,E,G,]2[B,DF]14 | [C,E,G,]2[B,DF]14 |
+[C,E,G,]2[G,CE]14 | [C,E,G,]2[G,CE]14 | z16 |
+[C,E,G,]16 | [C,E,G,B,]16 | [A,CE]16 |
+[B,DF]16 | [C,E,G,]16 | [B,DF]16 |
+[A,CE]16 | [F,B,C]16 | [C,E,G,]16 |]
+
+%此乐谱完全符合预期

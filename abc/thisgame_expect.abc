@@ -1,0 +1,12 @@
+V:5 treble nm="Harmony"
+%%MIDI program 0
+L:1/16
+[C,E,G,]16 | [A,CE]16 | [E,G,B,]16 | [F,^A,C]8[^A,CF]8 | [A,CE]16 |
+[E,G,B,]16 | [F,A,C]8[D,F,^A,C]8 | [G,^BD]16 | [C,E,G,]16 | [A,CE]16 |
+[E,G,B,]16 | [F,^A,C]16 | [A,B,E]16 | [B,DF]16 | [A,CE]16 |
+[A,CE]16 | [B,DF]16 | [B,DF]16 | [C,E,G,]16 | [A,CE]16 |
+[E,G,B,]16 | [F,G,C]16 | [C,E,G,]16 | [A,CE]16 | [E,G,B,]16 |
+[D,F,^A,]16 | [C,E,G,]8[G,CE]8 | [A,B,E]16 | [B,DF]16 |
+[E,G,B,D]16 | [G,B,D]16 | [A,B,E]16 | [B,DF]16 |]
+
+%此乐谱目前第7小节[F,A,C]12[E,G,B,D]4 不符合预期，预期应该是[F,A,C]8[D,F,^A,C]8 

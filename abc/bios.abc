@@ -1,0 +1,38 @@
+X:1
+T:Guilty Crown Soundtrack OST
+%%score { ( 1 2 ) | 3 }
+M:4/4
+I:linebreak 
+Q:1/4=80
+L:1/16
+K:Eb
+V:1 treble nm="Piano"
+%%MIDI program 0
+V:2 treble
+%%MIDI program 0
+V:3 bass
+%%MIDI program 0
+V:1
+L:1/16
+ x16 | x16 | z2B,z B,EzE DzDB, z2B,F |
+ z2B,z B,EzE DzDB, z2B,F | c2B2 f2Be ef2B f2B2 | c2B2 f2Be ef2B f2B2 |
+ zGB2 f2Be2f2B f2B2 | zGB2 f2Be2f2B f2B z | x16 |
+ [gec'c]4 [GEcC]4 [ge'ec']4 [f'fc'b]4 | [gec'c]4 [GEcC]4 [ge'ec']4 [f'fc'b]4 | [g'ge'c']4 [GEcC]4 [g'e'b'b]4 [g'e'c''c']4 |
+ [f'fd'b]4 [fFdB]4 [fe'eb]4 [fd'db]4 | [g2e2c'2c2][c2C2] [c'2c2][c2C2] [c'2c2][c2C2] [b2B2][c2C2] | [g2e'2e2c'2][c2C2] [e'2e2][c2C2] [d'2d2][c2C2] [f'2f2][c2C2] |
+ [g2e2c'2c2][c2C2] [c'2c2][c2C2] [c'2c2][c2C2] [g'2g2][c2C2] | [g2e2c'2c2][c2C2] [c'2c2][c2C2] [f'2f2][c2C2] [d'2d2][c2C2] | [cC]16 | %18 z8
+V:2
+L:1/16
+ x16 | x16 | x16 |
+ x16 | x16 | x16 |
+ c2GG GGGG z8 | c2GG GG z10 | x16 |
+ x16 | x16 | x16 |
+ x16 | x16 | x16 |
+ x16 | x16 | x16 | %18 z8
+V:3
+L:1/16
+ C,,G,,!>!C,G,, !>!B,,C,C,!>!G, F,C,!>!F,E, !>!D,E,F,G, | C,,G,,!>!C,G,, !>!B,,C,C,!>!G, F,C,!>!F,E, !>!D,E,F,G, | C,,G,,!>!C,!>!G,, !>!B,,!>!C,C,!>!G, F,C,!>!F,E, !>!D,E,F,G, |
+ C,,G,,C,G,, !>!B,,C,C,!>!G, F,C,!>!F,E, !>!D,E,F,G, | C,,C,G,B, DB,G,B, FB,G,B, DB,G,B, | C,,C,G,B, DB,G,B, FB,G,B, DB,G,B, |
+ C,,C,G,B, DB,G,B, FB,G,B, DB,G,B, | C,,C,G,B, DB,G,B, FB,G,B, D4 | x16 |
+ C,,,C,,C,,G,, CG,C,G, zC,,C,C, CG,C,,C, | B,,,B,,B,,F, B,F,B,,F, zB,,,B,,B,, B,F,B,,,B,, | A,,,A,,A,,E, A,E,A,,E, zA,,,A,,A,, A,E,A,,,A,, |
+ B,,,B,,B,,F, B,F,B,,F, zB,,,B,,B,, B,F,B,,,B,, | C,,C,C,G, CG,C,G, E,C,G,C, CG,C,G, | B,,,B,,B,,F, B,F,B,,F, D,B,,F,B,, B,F,B,,F, |
+ A,,,A,,A,,E, A,E,A,,E, C,A,,E,A,, A,E,A,,E, | B,,,B,,B,,F, B,F,B,,F, D,B,,F,B,, B,F,B,,F, | C,,G,,C,B,, C,E,F,B, CC,G,C B,CEF | %18 z16

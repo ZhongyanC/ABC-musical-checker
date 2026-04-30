@@ -1,0 +1,12 @@
+V:7 treble nm="Harmony"
+%%MIDI program 0
+L:1/16
+[E,G,B,]16 | [C,E,G,]16 | [A,CE]16 | [B,^DF]16 | [E,G,B,]16 |
+[G,B,D]16 | [A,CE]16 | [C,E,G,]8[D,F,A,]8 | [E,G,B,]16 | [C,E,G,]16 |
+[A,CE]16 | [B,DF]16 | [E,G,B,]16 | [C,E,G,]16 |
+[A,CE]16 | [B,^DF]16 | [C,E,G,]16 | [D,F,A,]16 |
+[A,CE]16 | [G,B,D]16 | [C,E,G,]16 |
+[D,F,A,]16 | [G,B,D]6[D,G,B,]10 | [A,CE]16 |
+[E,G,B,]16 | [C,E,G,]16 | [A,CE]16 | [G,B,D]15[B,DG]|]
+
+% 第8小目前是[D,F,A,C]16 不符合预期结果：[C,E,G,]8[D,F,A,]8; 并且此乐谱插入harmony V7时会在上边留一行空行影响渲染；其他乐谱没有

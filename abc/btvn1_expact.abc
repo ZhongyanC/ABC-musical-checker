@@ -1,0 +1,9 @@
+V:5 treble nm="Harmony"
+%%MIDI program 0
+L:1/8
+[C,E,G,]8 | [F,A,C]8 | [F,A,C]8 | [C,=E,G,B,]8 | [C,=E,G,B,]8 |
+[F,A,C]8 | [=E,G,B,]8 | [F,A,C]8 | [C,F,G,]8 | [C,E,G,]8 |
+[E,G,C,]4[C,E,G,]4 | [F,A,C]8 | [B,DF]8 | [E,G,B,]8 | [A,CE]8 |
+[F,A,C]4[=D,F,A,]4 | [E,G,B,]8 | [B,DF]8 | [E,G,B,]4[C,E,G,]4 | [B,DF]8 | [E,G,B,]8 |
+[E,G,B,]8 | [D,E,A,]8 | [E,G,B,]8 | [D,E,A,]8 | [E,G,B,]8 |
+[C,E,G,][E,G,C]7 | [A,CE]8 | [E,G,B,]8 | [E,G,B,]8 | [A,C,E,]8 |]

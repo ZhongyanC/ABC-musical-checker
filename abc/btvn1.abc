@@ -1,0 +1,48 @@
+X:1
+T:Allegro
+%%score { ( 1 2 ) | ( 3 4 ) }
+M:2/2
+I:linebreak 
+Q:1/2=80
+L:1/8
+K:Ab
+V:1 treble nm="Piano"
+%%MIDI program 0
+V:2 treble
+%%MIDI program 0
+V:3 bass
+%%MIDI program 0
+V:4 bass
+%%MIDI program 0
+V:1
+L:1/8
+ C2 z6 | .F2 .A2 .c2 .f2 | a3 (3g/f/=e/ .f2 z2 | .G2 .c2 .=e2 .g2 | b3 (3a/g/f/ .g2 z2 |
+ {c} a3 g/f/=e/ .f2 z3/2 | {c} b3 a/g/f/ .g2 z3/2 | !arpeggio![fc'ca]4 ba gf | {=efg} f2 e2 !fermata!z2 z2 | x8 |
+ x8 | z2 z(3e/d/c/ .d2 .d2 | A3 B/A/ G/ .A2 z3/2 | d3 e/d/ c/ .d2 z3/2 | z2 zd/c/ =B/ .c2 z3/2 |
+ c2 B4 A2 | .G2 e2 d2 c2 | c2 B4 A2 | .G2 [eE]2 [dD]2 [cC]2 | [cC]2 [BB,]4 [AA,]2 | [GG,]2 z2 z2 _f2 |
+ e2 d2 B2 G2 | _F3 E .A2 _f2 | e2 d2 B2 G2 | _F3 E .A2 _f2 | e2 d2 B2 G2 |
+ zG BA z=A cB | z=B dc z=d ad | e2 z2 z=d ad | e2 z2 zg _f'g | a2 z2 zg _f'g | %31 z8
+V:2
+L:1/8
+ x8 | x8 | x8 | x8 | x8 |
+ x8 | x8 | x8 | x8 | x8 |
+ x8 | A8 | d8 | G8 | A8 |
+ F8 | x8 | x8 | x8 | x8 | x8 |
+ x8 | x8 | x8 | x8 | x8 |
+ x8 | x8 | x8 | x8 | x8 | %31 z4
+V:3
+L:1/8
+ x8 | x8 | z2 [F,CA,]2 [F,CA,]2 [F,CA,]2 | [G,=E,CB,]2 z2 z4 | z2 [G,=E,CB,]2 [G,E,CB,]2 [G,E,CB,]2 |
+ z2 [F,CA,]2 [F,CA,]2 [F,CA,]2 | [K:clef=treble]z2 [G,=EB,]2 [G,EB,]2 [G,EB,]2 | z2 [FCA,]2 z2 [GDB,]2 | z2 [GC]2 !fermata!z2 .G,,2 | .C,2 .E,2 .G,2 .C2 |
+ E3 (3=D/C/=B,/ .C2 .C2 | [FC]8 | [FB,]8 | [EB,]8 | [EA,]8 |
+ D4 =D4 | E2 z2 z2 [EC]2 | [FD]4 [F=D]4 | [K:clef=bass]E2 z2 z2 [E,C,]2 | [F,D,]4 [F,=D,]4 | E,E E,E E,E E,E |
+ E,E E,E E,E E,E | E,2 E,2 E, EE, E | E,E E,E E,E E,E | E,2 E,2 E, EE, E | E,E E,E DE DE |
+ CE CE G,E G,E | A,E A,E F,=D A,D | E,E G,E F,=D A,D | E,E G,E D,B, _F,B, | C,A, E,A, D,B, _F,B, | %31 z8
+V:4
+L:1/8
+ x8 | x8 | x8 | x8 | x8 |
+ x8 | x8 | x8 | x8 | x8 |
+ x8 | x8 | x8 | x8 | x8 |
+ x8 | x8 | x8 | x8 | x8 | x8 |
+ x8 | D4 C2 z2 | x8 | D4 C2 z2 | x8 |
+ x8 | x8 | x8 | x8 | x8 | %31 z4
