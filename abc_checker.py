@@ -1154,19 +1154,30 @@ class MeasureDurationChecker(CheckerModule):
         if num == 1:   return f'z/{den}'
         return f'z{num}/{den}'
 
+    @staticmethod
+    def _is_spacer_only(measure: str) -> bool:
+        """Returns True when the measure contains only x (invisible spacer) notes."""
+        return bool(re.match(r'^\s*x[\d/]*(\s+x[\d/]*)*\s*$', measure))
+
+    def _fill_str(self, dur: Fraction, spacer: bool) -> str:
+        s = self._rest_str(dur)
+        return s.replace('z', 'x', 1) if spacer else s
+
     def _fix_measure(self, measure: str, expected: Fraction, is_compound: bool) -> str:
         """
         修复单小节时值：
-          不足 → 末尾补 z 休止；
+          不足 → 末尾补 z 休止（x-only 小节补 x）；
           超出 → 从末尾逐 token 删除直至 ≤ expected，再按不足条件补休止。
         """
         actual = self._measure_duration(measure, is_compound)
         if actual is None or actual == expected:
             return measure
 
+        spacer = self._is_spacer_only(measure)
+
         if actual < expected:
             body, comment = self._split_trailing_comment(measure)
-            fixed = body.rstrip() + ' ' + self._rest_str(expected - actual)
+            fixed = body.rstrip() + ' ' + self._fill_str(expected - actual, spacer)
             if comment:
                 fixed += ' ' + comment
             return fixed
@@ -1187,7 +1198,7 @@ class MeasureDurationChecker(CheckerModule):
 
         fixed = measure[:cut_pos]
         if cumsum < expected:
-            fixed = fixed.rstrip() + ' ' + self._rest_str(expected - cumsum)
+            fixed = fixed.rstrip() + ' ' + self._fill_str(expected - cumsum, spacer and not fixed.strip())
         return fixed
 
     def _fix_content(self, content: str, expected: Fraction,
@@ -1344,8 +1355,10 @@ class MeasureDurationChecker(CheckerModule):
                 u = voice_units[vid]
                 max_first_by_vid[vid] = max_s / Fraction(u[0], u[1])
         else:
+            pickup_semibreves = list(set(short_firsts))[0]
             for vid in voices:
-                max_first_by_vid[vid] = None
+                u = voice_units[vid]
+                max_first_by_vid[vid] = pickup_semibreves / Fraction(u[0], u[1])
 
         # ---------- 检查 + 修复 ----------
         for vid, (v_idx, idxs) in voices.items():
@@ -1368,12 +1381,13 @@ class MeasureDurationChecker(CheckerModule):
                     continue
 
                 if m_num == 1:
-                    if is_global_pickup:
-                        continue   # 弱起，跳过检查
                     ref = max_first_by_vid.get(vid)
                     if ref is None or actual == ref:
                         continue
-                    hint = f"（本声部 L:{voice_units[vid][0]}/{voice_units[vid][1]} 下对齐至最长小节 {ref} 单位）"
+                    if is_global_pickup:
+                        hint = f"（弱起：本声部 L:{voice_units[vid][0]}/{voice_units[vid][1]} 下应对齐至弱起时值 {ref} 单位）"
+                    else:
+                        hint = f"（本声部 L:{voice_units[vid][0]}/{voice_units[vid][1]} 下对齐至最长小节 {ref} 单位）"
                 else:
                     ref = exp_voice
                     if actual == ref:
@@ -1419,7 +1433,7 @@ class MeasureDurationChecker(CheckerModule):
         if is_global_pickup:
             issues.append(Issue(
                 line_index=body_start,
-                description="检测到第一小节存在一致的短时值弱起，第一小节未修复",
+                description="检测到弱起小节，已将所有声部第一小节对齐至弱起时值",
                 severity="info",
             ))
 
