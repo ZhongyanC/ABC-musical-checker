@@ -1135,6 +1135,16 @@ class MeasureDurationChecker(CheckerModule):
 
     # ---------- 时值修复辅助 ----------
 
+    def _has_musical_content(self, s: str) -> bool:
+        return bool(self._clean(s).strip())
+
+    @staticmethod
+    def _split_trailing_comment(s: str) -> Tuple[str, str]:
+        pct = s.find('%')
+        if pct == -1:
+            return s, ''
+        return s[:pct].rstrip(), s[pct:]
+
     @staticmethod
     def _rest_str(f: Fraction) -> str:
         """Fraction → ABC z 休止符写法"""
@@ -1155,7 +1165,11 @@ class MeasureDurationChecker(CheckerModule):
             return measure
 
         if actual < expected:
-            return measure.rstrip() + ' ' + self._rest_str(expected - actual)
+            body, comment = self._split_trailing_comment(measure)
+            fixed = body.rstrip() + ' ' + self._rest_str(expected - actual)
+            if comment:
+                fixed += ' ' + comment
+            return fixed
 
         # 超出：追踪 token 位置，找截断点
         _, tokens = self._calc(measure, is_compound, track_pos=True)
@@ -1190,12 +1204,13 @@ class MeasureDurationChecker(CheckerModule):
             segments.append((content[start:m.start()], m.group()))
             start = m.end()
         trailing = content[start:]
-        if trailing.strip():
+        if self._has_musical_content(trailing):
             segments.append((trailing, ''))
+            trailing = ''
 
         result = []
         for i, (measure, bar) in enumerate(segments):
-            if not measure.strip():
+            if not self._has_musical_content(measure):
                 result.append(measure + bar)
                 continue
             if i == 0:
@@ -1208,7 +1223,7 @@ class MeasureDurationChecker(CheckerModule):
             fixed = self._fix_measure(measure, exp, is_compound)
             sep = ' ' if (fixed and bar and not fixed.endswith(' ')) else ''
             result.append(fixed + sep + bar)
-        return ''.join(result)
+        return ''.join(result) + trailing
 
     # ---------- 主流程 ----------
 
@@ -1302,12 +1317,20 @@ class MeasureDurationChecker(CheckerModule):
             first_semibreves[vid] = d * Fraction(u[0], u[1])
 
         voices_with_first = [vid for vid in voices if first_durs.get(vid) is not None]
+        short_firsts = [
+            dur for dur in first_semibreves.values()
+            if Fraction(0) < dur < bar_semibreves
+        ]
+        firsts_not_overfull = all(
+            dur <= bar_semibreves for dur in first_semibreves.values()
+        )
         is_global_pickup = (
             len(voices) > 0
             and len(voices_with_first) == len(voices)
             and len(first_semibreves) == len(voices)
-            and len(set(first_semibreves.values())) == 1
-            and next(iter(first_semibreves.values())) != bar_semibreves
+            and bool(short_firsts)
+            and firsts_not_overfull
+            and len(set(short_firsts)) == 1
         )
 
         # 非弱起时：第一小节以「全音符下最长者」为基准，再换算回各声部自身 L 单位
@@ -1333,7 +1356,8 @@ class MeasureDurationChecker(CheckerModule):
             # 预处理（仅用于小节分割和检查，不影响 _fix_content）
             pre = re.sub(r'"[^"]*"', '',
                   re.sub(r'\[[A-Za-z]:[^\]]*\]', '', content_orig))
-            measures = [m for m in self._BAR_RE.sub('|', pre).split('|')]
+            measures = [m for m in self._BAR_RE.sub('|', pre).split('|')
+                        if self._has_musical_content(m)]
             exp_voice = expected_by_vid[vid]
 
             for m_num, measure in enumerate(measures, start=1):
@@ -1374,7 +1398,9 @@ class MeasureDurationChecker(CheckerModule):
                     pre = re.sub(r'"[^"]*"', '',
                           re.sub(r'\[[A-Za-z]:[^\]]*\]', '', line_content))
                     line_measures = [m for m in self._BAR_RE.sub('|', pre).split('|')]
-                    nonempty_measure_count = sum(1 for m in line_measures if m.strip())
+                    nonempty_measure_count = sum(
+                        1 for m in line_measures if self._has_musical_content(m)
+                    )
 
                     if measure_cursor == 0:
                         first_expected = max_first_by_vid.get(vid)
@@ -1393,7 +1419,7 @@ class MeasureDurationChecker(CheckerModule):
         if is_global_pickup:
             issues.append(Issue(
                 line_index=body_start,
-                description="所有声部第一小节均不满足拍号且时值相等，已识别为弱起小节，第一小节未修复",
+                description="检测到第一小节存在一致的短时值弱起，第一小节未修复",
                 severity="info",
             ))
 
