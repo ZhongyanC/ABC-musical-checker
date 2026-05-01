@@ -213,6 +213,61 @@ class HarmonicAnalyzer(CheckerModule):
             return self._KEY_SIG.get(m.group(1), 0) if m else 0
         return 0
 
+    def _line_ending(self, line: str, fallback: str = '') -> str:
+        if line.endswith('\r\n'):
+            return '\r\n'
+        if line.endswith('\n'):
+            return '\n'
+        return fallback
+
+    def _replace_key_field_key(self, line: str, new_key: str) -> str:
+        """
+        更新 K: 行的调名，同时保留谱号、transpose 等附加参数。
+        如果 K: 行只有 clef shorthand（如 K:bass），则插入调名而不是覆盖谱号。
+        """
+        nl = self._line_ending(line)
+        body = line[:-len(nl)] if nl else line
+        m = re.match(r'(\s*K:\s*)(\S+)?(.*)$', body)
+        if not m:
+            return line
+
+        prefix, key_token, tail = m.group(1), m.group(2), m.group(3)
+        if not key_token:
+            return f'{prefix}{new_key}{tail}{nl}'
+
+        token_l = key_token.lower()
+        key_like = (
+            token_l in ('none', 'hp')
+            or key_token in self._KEY_SIG
+            or re.match(r'^[A-G][b#]?(?:m|min|minor|maj|major|ion|dor|phr|lyd|mix|aeo|loc)?$',
+                        key_token, re.IGNORECASE)
+        )
+        if key_like:
+            return f'{prefix}{new_key}{tail}{nl}'
+        return f'{prefix}{new_key} {key_token}{tail}{nl}'
+
+    def _ensure_voice_key_fields(self, lines: List[str], k_idx: int, key_name: str) -> List[str]:
+        """在全局 K: 之后的每个 V: 行后插入/更新对应声部的 K: 行。"""
+        result: List[str] = []
+        fallback_nl = next((self._line_ending(l) for l in lines if self._line_ending(l)), '')
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            result.append(line)
+
+            if i > k_idx and line.lstrip().startswith('V:'):
+                next_i = i + 1
+                indent = re.match(r'\s*', line).group(0)
+                nl = self._line_ending(line, fallback_nl)
+                if next_i < len(lines) and lines[next_i].lstrip().startswith('K:'):
+                    result.append(self._replace_key_field_key(lines[next_i], key_name))
+                    i += 2
+                    continue
+                result.append(f'{indent}K:{key_name}{nl}')
+
+            i += 1
+        return result
+
     def _mode_bias_for_weights(self, pcw: Dict[int, float], sig_count: int) -> str:
         """
         在同一调号下比较关系大调/小调的和弦证据。
@@ -1471,7 +1526,8 @@ class HarmonicAnalyzer(CheckerModule):
             key_line = result_lines[k_idx]
             km = re.match(r'(\s*K:\s*)(\S+)(.*)$', key_line)
             if km and km.group(2) != inferred_key:
-                result_lines[k_idx] = f"{km.group(1)}{inferred_key}{km.group(3)}"
+                result_lines[k_idx] = self._replace_key_field_key(key_line, inferred_key)
+            result_lines = self._ensure_voice_key_fields(result_lines, k_idx, inferred_key)
 
         if self.chord_voice and bar_chord_data:
             while result_lines and not result_lines[-1].strip():
@@ -1612,6 +1668,8 @@ class HarmonicAnalyzer(CheckerModule):
                 f'%%MIDI program 0{nl}',
                 f'L:{unit_str}{nl}',
             ]
+            if auto_fix and inferred_key:
+                new_voice_lines.insert(1, f'K:{inferred_key}{nl}')
             new_voice_lines.extend(
                 ln.rstrip('\n').rstrip() + nl for ln in music_lines
             )
