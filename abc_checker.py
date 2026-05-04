@@ -2123,6 +2123,179 @@ class VoiceLineBreakAligner(CheckerModule):
         return issues, output
 
 
+class AutoBeamer(MeasureDurationChecker):
+    """
+    根据拍号自动 beam 短音符（metric autobeam）。
+
+    ABC 记谱中连音符通过音符之间无空格表示。
+    本模块遵循与 xml2abc metric autobeam 相同的规则：
+      - 仅处理时值 < 四分音符（1/4 全音符）的音符
+      - 同一拍内相邻短音符去除空格（beam 在一起）
+      - 切分音符（不精确落在拍线上）也与前音符 beam
+      - 精确落在拍线上的音符在前面加空格（断开）
+    仅在 auto_fix=True 时生效，不生成 Issue。
+    """
+
+    QUARTER = Fraction(1, 4)
+
+    @staticmethod
+    def _beat_dur(meter: Tuple[int, int]) -> Fraction:
+        mn, md = meter
+        if md == 8 and mn in (6, 9, 12):   # 复合拍：拍 = 附点四分
+            return Fraction(3, 8)
+        if md == 8 and mn in (5, 7):        # 混合拍：近似以 2/8 为最小拍单位
+            return Fraction(2, 8)
+        return Fraction(1, md)              # 单拍
+
+    def _rebeam_measure(
+        self,
+        measure_str: str,
+        unit_len: Fraction,
+        beat_dur: Fraction,
+        is_compound: bool,
+    ) -> str:
+        """对单小节字符串应用 autobeam，返回修改后的字符串。"""
+        _, tokens = self._calc(measure_str, is_compound, track_pos=True)
+        if len(tokens) < 2:
+            return measure_str
+
+        quarter_in_units = self.QUARTER / unit_len
+        beat_in_units    = beat_dur      / unit_len
+
+        cum: Fraction = Fraction(0)
+        positions: List[Fraction] = []
+        for _, _, dur in tokens:
+            positions.append(cum)
+            cum += dur
+
+        should_beam: List[bool] = []
+        for i in range(len(tokens) - 1):
+            dur_i    = tokens[i][2]
+            dur_next = tokens[i + 1][2]
+            pos_next = positions[i + 1]
+
+            if not (dur_i < quarter_in_units and dur_next < quarter_in_units):
+                should_beam.append(False)
+                continue
+
+            tel_i    = int(positions[i] / beat_in_units)
+            tel_next = int(pos_next     / beat_in_units)
+            on_beat  = (pos_next % beat_in_units == 0)
+
+            should_beam.append(tel_i == tel_next or not on_beat)
+
+        result = measure_str[:tokens[0][0]]
+        for i, (start, end, _) in enumerate(tokens):
+            if i > 0:
+                gap = measure_str[tokens[i - 1][1]:start]
+                if should_beam[i - 1]:
+                    gap = gap.lstrip(' \t')
+                else:
+                    if not (gap and gap[0] in ' \t'):
+                        gap = ' ' + gap
+                result += gap
+            result += measure_str[start:end]
+        result += measure_str[tokens[-1][1]:]
+        return result
+
+    def _rebeam_line(
+        self,
+        line: str,
+        unit_len: Fraction,
+        beat_dur: Fraction,
+        is_compound: bool,
+    ) -> str:
+        """按小节线分割行，逐小节 rebeam 后拼回。"""
+        bar_spans = list(self._BAR_RE.finditer(line))
+        if not bar_spans:
+            return self._rebeam_measure(line, unit_len, beat_dur, is_compound)
+
+        result = ''
+        start = 0
+        for m in bar_spans:
+            seg = line[start:m.start()]
+            result += self._rebeam_measure(seg, unit_len, beat_dur, is_compound) + m.group()
+            start = m.end()
+        trailing = line[start:]
+        if trailing.strip():
+            result += self._rebeam_measure(trailing, unit_len, beat_dur, is_compound)
+        else:
+            result += trailing
+        return result
+
+    def process(self, lines: List[str], auto_fix: bool) -> Tuple[List[Issue], List[str]]:
+        issues: List[Issue] = []
+        modified_lines = list(lines)
+
+        if not auto_fix:
+            return issues, modified_lines
+
+        body_start: Optional[int] = None
+        for i, line in enumerate(lines):
+            if line.lstrip().startswith('K:'):
+                body_start = i + 1
+                break
+        if body_start is None:
+            return issues, modified_lines
+
+        meter, global_unit = self._parse_headers(lines[:body_start])
+        if meter is None or global_unit is None:
+            return issues, modified_lines
+
+        beat_dur  = self._beat_dur(meter)
+        is_cmpd   = self._is_compound(meter[0], meter[1])
+
+        voices: Dict[str, Tuple[int, List[int]]] = {}
+        cur_id    = '__default__'
+        cur_v_idx = body_start
+        cur_idxs: List[int] = []
+
+        def _flush() -> None:
+            if cur_idxs:
+                voices[cur_id] = (cur_v_idx, list(cur_idxs))
+
+        def _is_hdr(s: str) -> bool:
+            return len(s) >= 2 and s[1] == ':' and s[0].isalpha()
+
+        for i in range(body_start, len(lines)):
+            s = lines[i].lstrip()
+            if s.startswith('V:'):
+                _flush()
+                cur_idxs = []
+                vb = s[2:].strip()
+                cur_id    = vb.split()[0] if vb else str(i)
+                cur_v_idx = i
+            elif s and not _is_hdr(s) and not s.startswith('%'):
+                cur_idxs.append(i)
+        _flush()
+        voices.pop('__default__', None)
+
+        if not voices:
+            body_idxs = [
+                i for i in range(body_start, len(lines))
+                if lines[i].lstrip() and not _is_hdr(lines[i].lstrip())
+            ]
+            if body_idxs:
+                voices['1'] = (body_start, body_idxs)
+
+        v_ordered = sorted(voices.items(), key=lambda kv: kv[1][0])
+        voice_units: Dict[str, Fraction] = {}
+        for k, (vid, (v_idx, idxs)) in enumerate(v_ordered):
+            next_v_line  = v_ordered[k + 1][1][0] if k + 1 < len(v_ordered) else None
+            first_music  = idxs[0] if idxs else None
+            scanned      = self._scan_voice_l_unit(lines, v_idx, first_music, next_v_line)
+            u            = scanned if scanned is not None else global_unit
+            voice_units[vid] = Fraction(u[0], u[1])
+
+        for vid, (_, idxs) in voices.items():
+            unit_len = voice_units[vid]
+            for line_idx in idxs:
+                new_line = self._rebeam_line(
+                    modified_lines[line_idx], unit_len, beat_dur, is_cmpd
+                )
+                modified_lines[line_idx] = new_line
+
+        return issues, modified_lines
 
 
 class ABCProcessor:
