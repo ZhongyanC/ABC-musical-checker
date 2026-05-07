@@ -2192,7 +2192,13 @@ class AutoBeamer(MeasureDurationChecker):
                     gap = gap.lstrip(' \t')
                 else:
                     if not (gap and gap[0] in ' \t'):
-                        gap = ' ' + gap
+                        # Keep leading slur-close parens before the space so abcjs
+                        # can recognise slurs: "(cA)G" should become "(cA) G" not "(cA )G"
+                        m = re.match(r'^\)+', gap)
+                        if m:
+                            gap = m.group() + ' ' + gap[m.end():]
+                        else:
+                            gap = ' ' + gap
                 result += gap
             result += measure_str[start:end]
         result += measure_str[tokens[-1][1]:]
