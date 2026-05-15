@@ -728,7 +728,7 @@ class VoiceBarCountChecker(CheckerModule):
     """
 
     # 匹配所有合法的小节线变体，统一归一为 '|'
-    _BAR_RE = re.compile(r':\|:|:\||\|\||\|\]|\[?\|:?')
+    _BAR_RE = re.compile(r'::|:\|:|:\||\|\||\|\]|\[?\|:?')
 
     def _count_measures(self, music_lines: List[str]) -> int:
         content = ' '.join(music_lines)
@@ -859,7 +859,7 @@ class MeasureDurationChecker(CheckerModule):
         跳过全部第一小节；否则第一小节对齐到「全音符下最长」再换算回各声部 L 单位修复。
     """
 
-    _BAR_RE            = re.compile(r':\|:|:\||\|\||\|\]|\[?\|:?')
+    _BAR_RE            = re.compile(r'::|:\|:|:\||\|\||\|\]|\[?\|:?')
     _TUPLET_Q          = {2: 3, 3: 2, 4: 3, 5: 2, 6: 2, 7: 2, 8: 3, 9: 2}
     _TUPLET_Q_COMPOUND = {2: 3, 3: 2, 4: 3, 5: 3, 6: 2, 7: 3, 8: 3, 9: 3}
 
@@ -1717,7 +1717,7 @@ class BarAccidentalPropagator(CheckerModule):
       因此 F' 与 f 属于同一音高，共享升降号状态。
     """
 
-    _BAR_SPLIT_RE = re.compile(r'(:\|:|:\||\|\||\|\]|\[?\|:?)')
+    _BAR_SPLIT_RE = re.compile(r'(::|:\|:|:\||\|\||\|\]|\[?\|:?)')
 
     @staticmethod
     def _norm(letter: str, octave_marks: str) -> tuple:
@@ -1968,7 +1968,7 @@ class VoiceLineBreakAligner(CheckerModule):
     3. 将所有「小节数/行 ≠ n」的声部的音乐行重新按 n 小节/行分行。
     """
 
-    _BAR_SPLIT_RE = re.compile(r'(:\|:|:\||\|\]|\|\||\|:|\|)')
+    _BAR_SPLIT_RE = re.compile(r'(::|:\|:|:\||\|\]|\|\||\|:|\|)')
 
     @staticmethod
     def _is_non_music(s: str) -> bool:
@@ -2153,14 +2153,17 @@ class AutoBeamer(MeasureDurationChecker):
         unit_len: Fraction,
         beat_dur: Fraction,
         is_compound: bool,
+        meter: Tuple[int, int] = (4, 4),
     ) -> str:
         """对单小节字符串应用 autobeam，返回修改后的字符串。"""
         _, tokens = self._calc(measure_str, is_compound, track_pos=True)
         if len(tokens) < 2:
             return measure_str
 
-        quarter_in_units = self.QUARTER / unit_len
-        beat_in_units    = beat_dur      / unit_len
+        quarter_in_units  = self.QUARTER / unit_len
+        beat_in_units     = beat_dur      / unit_len
+        duple_simple      = meter[1] == 4 and meter[0] % 2 == 0
+        group_in_units    = beat_in_units * 2 if duple_simple else beat_in_units
 
         cum: Fraction = Fraction(0)
         positions: List[Fraction] = []
@@ -2181,8 +2184,9 @@ class AutoBeamer(MeasureDurationChecker):
             tel_i    = int(positions[i] / beat_in_units)
             tel_next = int(pos_next     / beat_in_units)
             on_beat  = (pos_next % beat_in_units == 0)
+            same_group = int(positions[i] / group_in_units) == int(pos_next / group_in_units)
 
-            should_beam.append(tel_i == tel_next or not on_beat)
+            should_beam.append(tel_i == tel_next or not on_beat or same_group)
 
         result = measure_str[:tokens[0][0]]
         for i, (start, end, _) in enumerate(tokens):
@@ -2211,21 +2215,22 @@ class AutoBeamer(MeasureDurationChecker):
         unit_len: Fraction,
         beat_dur: Fraction,
         is_compound: bool,
+        meter: Tuple[int, int] = (4, 4),
     ) -> str:
         """按小节线分割行，逐小节 rebeam 后拼回。"""
         bar_spans = list(self._BAR_RE.finditer(line))
         if not bar_spans:
-            return self._rebeam_measure(line, unit_len, beat_dur, is_compound)
+            return self._rebeam_measure(line, unit_len, beat_dur, is_compound, meter)
 
         result = ''
         start = 0
         for m in bar_spans:
             seg = line[start:m.start()]
-            result += self._rebeam_measure(seg, unit_len, beat_dur, is_compound) + m.group()
+            result += self._rebeam_measure(seg, unit_len, beat_dur, is_compound, meter) + m.group()
             start = m.end()
         trailing = line[start:]
         if trailing.strip():
-            result += self._rebeam_measure(trailing, unit_len, beat_dur, is_compound)
+            result += self._rebeam_measure(trailing, unit_len, beat_dur, is_compound, meter)
         else:
             result += trailing
         return result
@@ -2298,7 +2303,7 @@ class AutoBeamer(MeasureDurationChecker):
             unit_len = voice_units[vid]
             for line_idx in idxs:
                 new_line = self._rebeam_line(
-                    modified_lines[line_idx], unit_len, beat_dur, is_cmpd
+                    modified_lines[line_idx], unit_len, beat_dur, is_cmpd, meter
                 )
                 modified_lines[line_idx] = new_line
 
