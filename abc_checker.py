@@ -2184,7 +2184,9 @@ class AutoBeamer(MeasureDurationChecker):
             tel_i    = int(positions[i] / beat_in_units)
             tel_next = int(pos_next     / beat_in_units)
             on_beat  = (pos_next % beat_in_units == 0)
-            same_group = int(positions[i] / group_in_units) == int(pos_next / group_in_units)
+            half_beat = beat_in_units / 2
+            both_eighth_or_longer = dur_i >= half_beat and dur_next >= half_beat
+            same_group = both_eighth_or_longer and int(positions[i] / group_in_units) == int(pos_next / group_in_units)
 
             should_beam.append(tel_i == tel_next or not on_beat or same_group)
 
